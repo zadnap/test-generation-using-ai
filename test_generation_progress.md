@@ -2,13 +2,13 @@
 
 ## Module hiện tại
 
-- Module: `packages/common/module-utils` (hoàn tất)
-- Module trước: `packages/common/file-stream`, `packages/common/serializer`, `packages/common/enums`, `packages/common/exceptions`, `packages/common/decorators`, `packages/common/interfaces`, `packages/common/services`, `packages/common/utils`, `packages/common/pipes` (hoàn tất)
+- Module: `packages/platform-socket.io` (hoàn tất)
+- Module trước: `packages/common/module-utils`, `packages/common/file-stream`, `packages/common/serializer`, `packages/common/enums`, `packages/common/exceptions`, `packages/common/decorators`, `packages/common/interfaces`, `packages/common/services`, `packages/common/utils`, `packages/common/pipes` (hoàn tất)
 - Repository: `nestjs/nest` (TypeScript, ESM)
 - Test framework: Vitest `5.1.0`
 - Coverage engine: `@vitest/coverage-v8`
 - Ngôn ngữ test: TypeScript (`*.spec.ts`)
-- Thư mục test AI sinh: `ai-generated-tests/packages/common/module-utils/`
+- Thư mục test AI sinh: `ai-generated-tests/packages/platform-socket.io/`
 - Không sửa production code, file build/dependency hay test có sẵn.
 
 ## Module 1 - `packages/common/pipes`
@@ -1252,3 +1252,140 @@ Giới hạn công cụ: `@vitest/coverage-v8` đo branch coverage, statement co
 - Module `packages/common/module-utils`: **hoàn tất**.
 - Số hàm bị chặn: **0**.
 - Đang dừng, chờ chỉ định module tiếp theo. Khi tiếp tục, đọc file này để tránh sinh lại test.
+
+## Module 12 - `packages/platform-socket.io`
+
+### Bước 1 - Khảo sát project
+
+- Test runner: Vitest `5.1.0` (root `vitest.config.mts`, globals, alias `@nestjs/*`, setup `reflect-metadata`).
+- Test hiện có của module: `packages/platform-socket.io/test/**/*.spec.ts` (2 file, 15 test).
+- Baseline chạy trước khi sinh test:
+
+```bash
+node node_modules/vitest/vitest.mjs run packages/platform-socket.io --reporter=dot
+```
+
+Kết quả baseline: **2 test files, 15 tests passed, 0 failed**.
+
+- Lưu ý môi trường: `node_modules/.bin` không tồn tại nên `npx vitest` lỗi
+  `vitest is not recognized`; gọi trực tiếp entrypoint `node node_modules/vitest/vitest.mjs`
+  cho kết quả tương đương và không sửa file build/dependency nào.
+- Cấu hình test AI sinh: `ai-generated-tests/vitest.config.mts` (chỉ include `ai-generated-tests/**/*.spec.ts`).
+
+### Bước 2 - Phân loại hàm
+
+#### In-scope
+
+| File production | Hàm / method | Trạng thái |
+| --- | --- | --- |
+| `adapters/io-adapter.ts` | `constructor` | Tested |
+| `adapters/io-adapter.ts` | `create` | Tested |
+| `adapters/io-adapter.ts` | `createIOServer` | Tested |
+| `adapters/io-adapter.ts` | `bindMessageHandlers` | Tested |
+| `adapters/io-adapter.ts` | `mapPayload` | Tested |
+| `adapters/io-adapter.ts` | `bindClientDisconnect` | Tested |
+| `adapters/io-adapter.ts` | `close` | Tested |
+| `utils/merge-map-bounded.util.ts` | `mergeMapBounded` (operator + `drain`) | Tested |
+
+#### Out-of-scope
+
+- `index.ts`, `adapters/index.ts`: chỉ re-export.
+- `Readme.md`, `package.json`, `tsconfig*.json`: không có logic thực thi.
+- Type `IoAdapterOptions`: type-only.
+
+#### Indirect dependency
+
+- `@nestjs/websockets` (`AbstractWsAdapter`): dùng thật; `super.close()` dùng `server.close`.
+- `@nestjs/common/internal` (`isFunction`, `isNil`) và `Logger`: dùng thật.
+- `socket.io` (`Server`): thay bằng stub trong test (không mở port thật, không gắn HTTP server thật).
+- `rxjs`: dùng thật (`defer`, `fromEvent`, `share`, `first`, `filter`, `map`, `takeUntil`, `catchError`, `EMPTY`).
+
+### Bước 3-4 - CFG / C3 và test path
+
+Quy ước: mỗi điều kiện con là một nút quyết định riêng, short-circuit được tôn trọng.
+
+- **`constructor`** — `options?.maxConcurrentMessages ?? DEFAULT_MAX_CONCURRENT_MESSAGES`
+  - 1 điều kiện: giá trị nullish (T: bỏ options/`{}`; F: `0`, `5`, `Infinity`). `0` chứng minh `??` không dùng truthiness.
+- **`create`**
+  - Nút 1 `!options`: T (không truyền) / F (truyền `{}`).
+  - Nút 2 `server && namespace && isFunction(server.of)`: `2c1` server T/F, `2c2` namespace T/F, `2c3` `isFunction(server.of)` T/F.
+  - Nút 3 `namespace ? ... : ...`: T/F.
+  - Các path đã phủ: `1(T)`; `1(F),2c1(F)`; `2c1(F),3(T)`; `2c1(T),2c2(T),2c3(T)`; `2c1(T),2c2(T),2c3(F),3(T)`; `2c1(T),2c2(F)`; `2c2(F),3(F)` (namespace rỗng).
+- **`createIOServer`**
+  - Nút 1 `this.httpServer && port === 0`: `1c1` T/F, `1c2` T/F (khi `1c1(F)` thì `1c2` bị bỏ qua).
+- **`bindMessageHandlers`**
+  - Nút 1 `!disconnect$`: T (lần đầu) / F (cùng socket, lần hai).
+  - Nút 2 `!isNil(response)`: T/F (response `undefined`/`null` bị lọc).
+  - Catch của `catchError` (transform/callback throw) và `catch` của subscriber (emit/ack throw).
+  - Nút 3 `response.event`: T (emit event) / F.
+  - Nút 4 `!isAckHandledManually && isFunction(ack)`: `4c1` T/F, `4c2` T/F (T: ack là function; F: payload không có ack).
+  - Nút 5 `while` ngầm của `handlers.forEach`: 0 handler và nhiều handler.
+- **`mapPayload`**
+  - Nút 1 `!Array.isArray(payload)`: T/F.
+  - Nút 2 `isFunction(payload)`: T/F.
+  - Nút 3 `isAck = isFunction(lastElement)`: T/F.
+  - Nút 4 `size === 1`: T (một value + ack) / F (nhiều value + ack, hoặc chỉ ack).
+- **`bindClientDisconnect`** — 0 nút quyết định, 1 path (đăng ký `once('disconnect')` và chuyển reason).
+- **`close`**
+  - Nút 1 `this.forceCloseConnections && server.httpServer === this.httpServer`: `1c1` T/F, `1c2` T/F.
+  - Nhánh `super.close`: `server && isFunction(server.close)` T/F.
+- **`mergeMapBounded`** (`drain` và callback)
+  - Nút 1 `if (isDraining)`: T (inner complete đồng bộ gọi lại `drain`) / F.
+  - Nút 2 `while (head && active < concurrent && !subscriber.closed)`: `2c1` T/F, `2c2` T/F, `2c3` T/F.
+  - Nút 3 `if (onBacklog && isBacklogged !== !!head)`: `3c1` T/F, `3c2` T (đổi trạng thái) / F (không đổi).
+  - Nút 4 `if (isSourceComplete && !head && active === 0)`: `4c1` T/F, `4c2` T/F, `4c3` T/F.
+  - Nút 5 `tail = head ? ... : ...`: T (đã có phần tử chờ) / F (hàng đợi rỗng).
+  - Nhánh error: `project` throw và source error.
+  - `2c3(F)` được phủ bằng cách unsubscribe ngay trong `project`: vòng `while` kiểm tra lại và thấy `subscriber.closed === true`.
+  - Số path infeasible: **0**.
+
+### Bước 5 - File test đã tạo
+
+- `ai-generated-tests/packages/platform-socket.io/adapters/io-adapter.spec.ts`
+- `ai-generated-tests/packages/platform-socket.io/utils/merge-map-bounded.util.spec.ts`
+
+- Sử dụng Parameterized Test (`it.each`) cho constructor, `create`, `createIOServer`, `mapPayload`, `mergeMapBounded`.
+- `socket.io.Server` được stub bằng `vi.mock` để đo cả hai nhánh của `createIOServer` mà không mở cổng mạng.
+
+### Bước 6 - Kết quả thực thi và coverage
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/platform-socket.io --reporter=dot
+```
+
+Kết quả: **2 test files, 53 tests passed, 0 failed, 0 lỗi biên dịch/import**.
+
+Coverage:
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/platform-socket.io --coverage --coverage.include="packages/platform-socket.io/**/*.ts" --coverage.reporter=text
+```
+
+Kết quả (`@vitest/coverage-v8`):
+
+- Statements: **100%** (80/80)
+- Branches: **100%** (51/51)
+- Functions: **100%** (26/26)
+- Lines: **100%** (78/78)
+- 2 file fully covered: `adapters/io-adapter.ts`, `utils/merge-map-bounded.util.ts`.
+
+Giới hạn công cụ: `@vitest/coverage-v8` không báo cáo C3 theo nghĩa atomic-condition trực tiếp.
+Số liệu trên là branch/statement/function/line coverage; các cặp T/F của từng điều kiện con
+được thiết kế và ghi chú ngay trong tên test/nhóm test theo CFG ở trên.
+
+Lưu ý khi chạy toàn bộ suite AI sinh:
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts --reporter=dot
+```
+
+Kết quả: **108 test files, 1783 tests**, trong đó **3 test fail thuộc `platform-fastify`**
+(`get-media-type-version.util.spec.ts`, `route-config.decorator.spec.ts`,
+`route-constraints.decorator.spec.ts`, `route-schema.decorator.spec.ts`) — các file này
+không thuộc module được chỉ định và không bị sửa bởi lần sinh test này.
+
+### Bước 7 - Trạng thái
+
+- Module `packages/platform-socket.io`: **hoàn tất**.
+- Số hàm in-scope: **8/8 đã sinh test**, **0 bỏ qua**, **0 BLOCKED**.
+- Đang dừng, chờ chỉ định module tiếp theo. Khi tiếp tục, đọc file này để tránh sinh lại test đã có.
