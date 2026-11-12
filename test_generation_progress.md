@@ -2,13 +2,13 @@
 
 ## Module hiện tại
 
-- Module: `packages/platform-socket.io` (hoàn tất)
-- Module trước: `packages/common/module-utils`, `packages/common/file-stream`, `packages/common/serializer`, `packages/common/enums`, `packages/common/exceptions`, `packages/common/decorators`, `packages/common/interfaces`, `packages/common/services`, `packages/common/utils`, `packages/common/pipes` (hoàn tất)
+- Module: `packages/platform-fastify` (hoàn tất)
+- Module trước: `packages/platform-socket.io`, `packages/common/module-utils`, `packages/common/file-stream`, `packages/common/serializer`, `packages/common/enums`, `packages/common/exceptions`, `packages/common/decorators`, `packages/common/interfaces`, `packages/common/services`, `packages/common/utils`, `packages/common/pipes` (hoàn tất)
 - Repository: `nestjs/nest` (TypeScript, ESM)
 - Test framework: Vitest `5.1.0`
 - Coverage engine: `@vitest/coverage-v8`
 - Ngôn ngữ test: TypeScript (`*.spec.ts`)
-- Thư mục test AI sinh: `ai-generated-tests/packages/platform-socket.io/`
+- Thư mục test AI sinh: `ai-generated-tests/packages/platform-fastify/`
 - Không sửa production code, file build/dependency hay test có sẵn.
 
 ## Module 1 - `packages/common/pipes`
@@ -1388,4 +1388,186 @@ không thuộc module được chỉ định và không bị sửa bởi lần s
 
 - Module `packages/platform-socket.io`: **hoàn tất**.
 - Số hàm in-scope: **8/8 đã sinh test**, **0 bỏ qua**, **0 BLOCKED**.
+- Đang dừng, chờ chỉ định module tiếp theo. Khi tiếp tục, đọc file này để tránh sinh lại test đã có.
+
+## Module 11 - `packages/platform-fastify`
+
+### Bước 1 - Khảo sát project
+
+- Test runner của repo: `vitest` (`npm test` -> `vitest run`).
+- Cấu hình gốc: `vitest.config.mts`; alias `@nestjs/*`, setup `reflect-metadata`.
+- Test hiện có của module: `packages/platform-fastify/test/**/*.spec.ts`.
+- Baseline chạy trước khi sinh test:
+
+```bash
+npx vitest run packages/platform-fastify/test --reporter=dot
+```
+
+Kết quả baseline: **22 test files, 355 tests passed, 0 failed**.
+
+- Cấu hình riêng cho test AI sinh: `ai-generated-tests/vitest.config.mts`.
+  Cấu hình chỉ include `ai-generated-tests/**/*.spec.ts`; coverage include
+  `packages/platform-fastify/**/*.{ts,js}` và loại các file type-only
+  (`interfaces/**`, `multipart/interfaces/**`, `index.ts`), test có sẵn (`test/**`)
+  và file `*.spec.ts`/`*.test.ts`.
+- Môi trường: cài dependency bằng
+  `npm ci --ignore-scripts --no-audit --no-fund --legacy-peer-deps`
+  (`npm ci` thường lỗi xung đột peer `graphql`, và Vitest chưa có trong `node_modules`).
+
+### Bước 2 - Phân loại hàm
+
+#### In-scope (đã sinh test)
+
+| File production | Hàm/phương thức | Trạng thái |
+| --- | --- | --- |
+| `adapters/fastify-adapter.ts` | `FastifyAdapter`: constructor, `setOnRequestHook`, `setOnResponseHook`, `runLifecycleHook`, `init`, `listen`, `isValidPort`, toàn bộ HTTP verb (`get`/`post`/`head`/`delete`/`put`/`patch`/`options`/`search`/`query`/`propfind`/`proppatch`/`mkcol`/`copy`/`move`/`lock`/`unlock`/`all`), `applyVersionFilter`, `reply`, `status`, `end`, `render`, `redirect`, `setErrorHandler`, `setNotFoundHandler`, `getHttpServer`, `getInstance`, `register`, `useMultipart`, `inject`, `beforeClose`, `close`, `initHttpServer`, `useStaticAssets`, `setViewEngine`, `isHeadersSent`, `getHeader`, `setHeader`, `appendHeader`, các `getRequest*`, `enableCors`, `copyCorsHeadersToRaw`, `registerSecurityHook`, `registerParserMiddleware`, `useBodyParser`, `createMiddlewareFactory`, `runMiddleware`, `getType`, `isRouteOrderSensitive`, `getRouteMatchingOptions`, `use`, `mapException`, `isHttpFastifyError`, `registerWithPrefix`, `isNativeResponse`, các parser nội bộ, `registerMiddie`, `injectRouteOptions`, `requireNonEmptyParams`, `getTopLevelRouterOptions`, `sanitizeUrl`, `removeDuplicateSlashes`, `trimLastSlash`, `getPathFromRequestTarget`, `isRoutableRequestTarget`, `trackOpenConnections`, `closeOpenConnections` | Tested |
+| `adapters/utils/get-media-type-version.util.ts` | `getMediaTypeVersion` | Tested |
+| `constants.ts` | `FASTIFY_ROUTE_CONFIG_METADATA`, `FASTIFY_ROUTE_CONSTRAINTS_METADATA`, `FASTIFY_ROUTE_SCHEMA_METADATA` | Tested |
+| `decorators/route-config.decorator.ts` | `RouteConfig` | Tested |
+| `decorators/route-constraints.decorator.ts` | `RouteConstraints` | Tested |
+| `decorators/route-schema.decorator.ts` | `RouteSchema` | Tested |
+| `multipart/multipart/append-field.util.ts` | `appendField` | Tested |
+| `multipart/multipart/multipart.constants.ts` | toàn bộ hằng số/exception map | Tested |
+| `multipart/multipart/multipart.error.ts` | `MultipartError` (constructor, `getStatus`) | Tested |
+| `multipart/multipart/multipart.parser.ts` | `resolveStorage`, `removeFiles`, `drainRequest`, `validateLimits`, `processMultipart`, `processStream` (gồm `storeFile`, `readingAhead`, `applyFileFilter`, `createRequestFile`) | Tested |
+| `multipart/multipart/multipart.utils.ts` | `mergeMultipartOptions`, `transformException` | Tested |
+| `multipart/multipart/multipart-interceptor.factory.ts` | `createMultipartInterceptor`, `createMultipartStreamInterceptor` | Tested |
+| `multipart/storage/memory.storage.ts` | `memoryStorage` (`_handleFile`, `_removeFile`) | Tested |
+| `multipart/storage/disk.storage.ts` | `diskStorage` (`_handleFile`, `_removeFile`, `getFilename`, `getDestination`) | Tested |
+| `multipart/multipart.module.ts` | `MultipartModule.forRoot`, `forRootAsync` | Tested |
+| `multipart/interceptors/*.ts` | `FileInterceptor`, `FilesInterceptor`, `AnyFilesInterceptor`, `FileFieldsInterceptor`, `NoFilesInterceptor`, `FileStreamInterceptor` | Tested |
+| `multipart/files.constants.ts`, `multipart/multipart.constants.ts` | hằng số DI token/module id | Covered indirectly (được import bởi module/interceptor) |
+
+#### Out-of-scope
+
+- `index.ts`, các `index.ts` con: chỉ re-export.
+- `interfaces/**`, `multipart/interfaces/**`: type-only, không có mã thực thi.
+- `Readme.md`, `package.json`, `tsconfig*.json`: không có logic.
+- Các test có sẵn `packages/platform-fastify/test/**`: không sửa, chỉ dùng làm baseline.
+
+#### Indirect dependency
+
+- `@nestjs/common`, `@nestjs/common/internal` (`isFunction`, `tryLoadPackage`, `LegacyRouteConverter`): dùng thật.
+- `fastify`, `@fastify/cors`, `@fastify/multipart`, `@fastify/static`, `@fastify/view`, `middie`, `path-to-regexp`: dùng thật; riêng plugin CORS/multipart được mock cục bộ trong file chuyên biệt để chạm nhánh lỗi/thiếu package.
+- `fs/promises`: mock riêng hàm `unlink` trong test `disk.storage` để chạm nhánh lỗi xoá file.
+- `stream`, `net`, `http-errors`: dùng thật hoặc stub tối thiểu.
+
+### Bước 3-4 - CFG / C3 và test path
+
+Quy ước: mỗi điều kiện con là một nút quyết định riêng, short-circuit được tôn trọng.
+Các nhóm chính:
+
+- **`FastifyAdapter` - HTTP verbs / `init` / `listen` / versioning**
+  - Verb: nhánh có route options và không có; nhánh `VERSION_NEUTRAL`; nhánh method không hỗ trợ.
+  - `init`: `isParserRegistered` T/F, `pathPrefix` rỗng/khác rỗng, hook onRequest/onResponse có/không.
+  - `listen`: `port` là `0`, số, chuỗi; `isValidPort` T/F; lỗi listen được map qua `mapException`.
+  - Versioning: `VersioningType.URI`/`HEADER`/`MEDIA_TYPE`/`CUSTOM`; version extractor lỗi; constraint rỗng/không rỗng.
+- **`FastifyAdapter` - reply/response**
+  - `status` phân biệt reply thật và native response (`'status' in response`).
+  - `reply`: `StreamableFile`, stream thường, `Response`, typed array, view engine, redirect, lỗi `Error` với status 4xx/5xx/không xác định.
+  - `getHeader`/`setHeader`/`appendHeader`: reply và raw response; `set-cookie` gộp mảng; headers đã gửi.
+  - `end`: reply/native, `HEAD`, stream không có `destroy`.
+- **`FastifyAdapter` - CORS**
+  - `hook` khác `onRequest`: đăng ký plugin trực tiếp.
+  - Proxy `addHook`: tên `onRequest` và chưa có hook / đã có hook / tên khác.
+  - Proxy property: function (bind) và non-function (giữ nguyên) - test bằng plugin CORS giả đọc một property không phải function.
+  - Callback plugin: `err` truthy -> reject; `null` -> resolve.
+  - Options là function 0/1 tham số -> gọi với instance; >= 2 tham số hoặc object -> dùng trực tiếp.
+- **`FastifyAdapter` - multipart**
+  - `multipartMode` `off`/`auto`/`eager`; `isMultipartRequested` idempotent.
+  - Plugin đã đăng ký (`hasRequestDecorator('isMultipart')`) -> bỏ qua.
+  - Package thiếu (`tryLoadPackage` trả falsy) -> throw `MISSING_MULTIPART_PACKAGE_MESSAGE`.
+  - `limits` có/không; options được copy.
+- **`FastifyAdapter` - middleware**
+  - `path.endsWith('$')` T/F; `LegacyRouteConverter.tryConvert` với `/*`, `/+`, path thường.
+  - Fallback `normalizedPath === '/*path'` -> `'*path'` (phủ bằng path `/+`).
+  - `_pathPrefix` + path `/` hoặc rỗng; `caseSensitive`; middleware trả Promise/thenable/non-thenable; throw đồng bộ; reject bất đồng bộ; next gọi nhiều lần; lỗi đăng ký path.
+- **`FastifyAdapter` - body parser / route options**
+  - Custom parser vs default; `rawBody`; mảng content type; RegExp `lastIndex`; catch-all `'*'`.
+  - `injectRouteOptions`: path dạng tuple/không tuple; metadata config/constraints/schema; method hỗ trợ/không hỗ trợ.
+  - `requireNonEmptyParams`: URL không có tham số, tham số rỗng, wildcard.
+- **`getMediaTypeVersion`**: `key='v='`, tham số có/không có prefix, giá trị rỗng, nhiều tham số, chuỗi không phải media type.
+- **`appendField`**: tên thường, `a[b]`, `a[]`, `a[0]`, tên dẫn đầu `[`, depth/index vượt giới hạn, prototype pollution.
+- **`multipart.parser`**:
+  - `resolveStorage`: storage tường minh / `dest` / mặc định memory.
+  - `validateLimits`: undefined, rỗng, giá trị âm/không phải số.
+  - `processMultipart`: plugin thiếu, không phải multipart, reset `req.file`/`req.files`, VALUE/ARRAY/OBJECT/NONE, file filter accept/reject/error, `maxCount`, field validation, limits function.
+  - `storeFile`: stream đã destroyed, abort trước callback, callback sau abort, abort đến sau callback (`calledBack` guard), read-ahead thành công/thất bại, lỗi xoá file.
+  - `readingAhead`: `nextPart` có/không có phần đọc trước; `readAhead` giữ nguyên promise đang chờ.
+  - `drainRequest`: request đã end, đang chảy, bị destroy.
+- **`memoryStorage` / `diskStorage`**: ghi file thành công, lỗi ghi, xoá file, `unlink` lỗi, `getFilename`/`getDestination` function và chuỗi.
+- **Interceptor**: thiếu plugin, sai adapter, không có file, một file/nhiều file/field, stream, `NoFiles`, lỗi pipe.
+- **`MultipartModule`**: `forRoot` đồng bộ, `forRootAsync` với `useFactory`/`useClass`/`useExisting`, global module.
+
+Số path infeasible: **1** - nhánh `false` của `if (!partReadAhead)` tại
+`multipart/multipart/multipart.parser.ts:257`. `readAhead()` chỉ được gọi từ handler
+`'close'` của stream, và sự kiện `close` chỉ phát một lần cho mỗi stream, nên
+`partReadAhead` luôn `undefined` ở lần gọi duy nhất đó.
+
+### Bước 5 - File test đã tạo
+
+- `ai-generated-tests/packages/platform-fastify/constants.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/adapters/fastify-adapter.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/adapters/fastify-adapter.cors.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/adapters/fastify-adapter.multipart-missing.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/adapters/utils/get-media-type-version.util.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/decorators/route-config.decorator.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/decorators/route-constraints.decorator.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/decorators/route-schema.decorator.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/multipart.module.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/multipart/append-field.util.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/multipart/multipart.constants.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/multipart/multipart.error.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/multipart/multipart.parser.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/multipart/multipart.utils.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/multipart/multipart-interceptor.factory.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/storage/memory.storage.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/storage/disk.storage.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/interceptors/file.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/interceptors/files.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/interceptors/any-files.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/interceptors/file-fields.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/interceptors/no-files.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-fastify/multipart/interceptors/file-stream.interceptor.spec.ts`
+- Helper dùng chung: `ai-generated-tests/packages/platform-fastify/multipart/upload-test.helper.ts`
+
+- Sử dụng Parameterized Test (`it.each`) cho: HTTP verbs, status/header helpers, body parser content types, media type version, append-field, limits, interceptor variants.
+- File `fastify-adapter.cors.spec.ts` mock `@fastify/cors` để chạm nhánh non-function property và callback lỗi.
+- File `fastify-adapter.multipart-missing.spec.ts` tách riêng và mock `@fastify/multipart` để tránh cache `tryLoadPackage` của các test trước, chạm nhánh package thiếu.
+- `disk.storage.spec.ts` mock `fs/promises.unlink` để chạm nhánh lỗi xoá.
+
+### Bước 6 - Kết quả thực thi và coverage
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/platform-fastify --reporter=dot
+```
+
+Kết quả: **23 test files, 576 tests passed, 0 failed, 0 lỗi biên dịch/import**.
+
+Coverage:
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/platform-fastify --coverage --reporter=dot
+```
+
+Kết quả (`@vitest/coverage-v8`):
+
+- Statements: **100%** (1033/1033)
+- Branches: **99.85%** (701/702)
+- Functions: **100%** (253/253)
+- Lines: **100%** (1008/1008)
+- File còn thiếu nhánh: `multipart/multipart/multipart.parser.ts` (dòng 257, nhánh đã nêu ở Bước 3-4 là infeasible).
+
+Giới hạn công cụ: `@vitest/coverage-v8` không báo C3 theo nghĩa atomic-condition trực tiếp.
+Số liệu trên là branch/statement/function/line coverage; các cặp T/F của từng điều kiện con
+được thiết kế và ghi chú trong tên test/nhóm test theo CFG ở trên. V8 cũng có thể gộp
+một số điều kiện short-circuit thành một branch, nên branch coverage không đồng nhất
+1-1 với số điều kiện atomic.
+
+### Bước 7 - Trạng thái
+
+- Module `packages/platform-fastify`: **hoàn tất**.
+- Số hàm in-scope: **toàn bộ hàm public/private của module đã sinh test**, **0 bỏ qua**, **0 BLOCKED**.
+- Coverage: statements/lines/functions 100%; branches 99.85% (1 nhánh infeasible đã ghi rõ).
+- Không sửa production code, file build/dependency hay test có sẵn.
 - Đang dừng, chờ chỉ định module tiếp theo. Khi tiếp tục, đọc file này để tránh sinh lại test đã có.
