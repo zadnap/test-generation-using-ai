@@ -10,15 +10,14 @@ export default defineConfig({
     include: ['ai-generated-tests/**/*.spec.ts'],
     coverage: {
       provider: 'v8',
-      include: ['packages/platform-fastify/**/*.{ts,js}'],
+      include: ['packages/websockets/**/*.{ts,js}'],
       exclude: [
         'packages/**/*.spec.ts',
         'packages/**/*.test.ts',
         'packages/**/index.ts',
         'packages/**/*.interfaces.ts',
-        'packages/platform-fastify/interfaces/**/*.ts',
-        'packages/platform-fastify/multipart/interfaces/**/*.ts',
-        'packages/platform-fastify/test/**',
+        'packages/websockets/interfaces/**/*.ts',
+        'packages/websockets/test/**',
       ],
       reporter: ['text', 'html', 'json-summary'],
       reportsDirectory: 'ai-generated-tests/coverage',

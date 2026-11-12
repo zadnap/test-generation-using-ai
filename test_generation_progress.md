@@ -2,13 +2,13 @@
 
 ## Module hiện tại
 
-- Module: `packages/platform-fastify` (hoàn tất)
-- Module trước: `packages/platform-socket.io`, `packages/common/module-utils`, `packages/common/file-stream`, `packages/common/serializer`, `packages/common/enums`, `packages/common/exceptions`, `packages/common/decorators`, `packages/common/interfaces`, `packages/common/services`, `packages/common/utils`, `packages/common/pipes` (hoàn tất)
+- Module: `packages/websockets` (hoàn tất)
+- Module trước: `packages/platform-fastify`, `packages/platform-socket.io`, `packages/common/module-utils`, `packages/common/file-stream`, `packages/common/serializer`, `packages/common/enums`, `packages/common/exceptions`, `packages/common/decorators`, `packages/common/interfaces`, `packages/common/services`, `packages/common/utils`, `packages/common/pipes` (hoàn tất)
 - Repository: `nestjs/nest` (TypeScript, ESM)
 - Test framework: Vitest `5.1.0`
 - Coverage engine: `@vitest/coverage-v8`
 - Ngôn ngữ test: TypeScript (`*.spec.ts`)
-- Thư mục test AI sinh: `ai-generated-tests/packages/platform-fastify/`
+- Thư mục test AI sinh: `ai-generated-tests/packages/websockets/`
 - Không sửa production code, file build/dependency hay test có sẵn.
 
 ## Module 1 - `packages/common/pipes`
@@ -1569,5 +1569,268 @@ một số điều kiện short-circuit thành một branch, nên branch coverag
 - Module `packages/platform-fastify`: **hoàn tất**.
 - Số hàm in-scope: **toàn bộ hàm public/private của module đã sinh test**, **0 bỏ qua**, **0 BLOCKED**.
 - Coverage: statements/lines/functions 100%; branches 99.85% (1 nhánh infeasible đã ghi rõ).
+- Không sửa production code, file build/dependency hay test có sẵn.
+- Đang dừng, chờ chỉ định module tiếp theo. Khi tiếp tục, đọc file này để tránh sinh lại test đã có.
+
+## Module 13 - Hoàn thiện độ phủ `packages/common`
+
+- Thực hiện sau module `packages/platform-fastify`; không sinh lại các test đã có.
+- Đối chiếu 103 file nguồn `packages/common/**/*.ts` (loại `test/`, `*.spec.ts`, `index.ts`, `*.interface.ts`) với 101 spec hiện có.
+- 5 file nguồn chưa có spec tương ứng, phân loại:
+  - `constants.ts` → **đã bổ sung spec**.
+  - `services/log-levels.constant.ts` → **đã bổ sung spec**.
+  - `internal.ts` → barrel re-export, out-of-scope (không có logic).
+  - `serializer/class-serializer.interfaces.ts` → type-only, out-of-scope.
+  - `serializer/standard-schema-serializer.interfaces.ts` → type-only, out-of-scope.
+
+### File test bổ sung
+
+- `ai-generated-tests/packages/common/constants.spec.ts`
+- `ai-generated-tests/packages/common/services/log-levels.constant.spec.ts`
+
+Cả hai dùng Parameterized Test (`it.each`), kiểm tra toàn bộ hằng số/hằng tuple; 0 decision node, 1 path độc lập.
+
+### Kết quả thực thi
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/common --reporter=dot
+```
+
+- **103 test files, 1751 tests passed, 0 failed**.
+
+### Coverage
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/common --coverage --coverage.include="packages/common/**/*.ts" --coverage.reporter=text
+```
+
+| Metric | Kết quả |
+| --- | --- |
+| Statements | **100%** (1771/1771) |
+| Branches | **99.76%** (1271/1274) |
+| Functions | **100%** (409/409) |
+| Lines | **100%** (1748/1748) |
+
+### 2 nhánh infeasible (không thể phủ nếu không sửa production)
+
+1. `packages/common/decorators/http/route-params.decorator.ts:121`
+   - Nhánh phải của `(pipes ?? [])` trong nhánh `hasParamData === false`.
+   - Mọi call site truyền `data` không phải string đều truyền `pipes` là array
+     (`...pipes` rest hoặc array đã `filter(Boolean)`), còn call site bỏ trống
+     `pipes` (nhánh options-first) cũng bỏ trống `data` nên `hasParamData === true`.
+   - Do đó không thể có đồng thời `data` non-string và `pipes === undefined` qua public API.
+2. `packages/common/utils/parameter-decorator-options.util.ts:5`
+   - Nhánh `isFunction(value) && value.prototype && isFunction(value.prototype.transform)`
+     của `isPipeLike`.
+   - `isPipeLike` chỉ được gọi sau điều kiện `typeof value === 'object'` trong
+     `isParameterDecoratorOptions`; hàm có `typeof value === 'function'` nên không bao giờ lọt vào.
+   - Đây là nhánh phòng thủ không thể chạm tới (dead defensive branch).
+
+- Không sửa production code, không sửa test có sẵn.
+- Trạng thái: `packages/common` **hoàn tất** phần test AI sinh; đang dừng, chờ chỉ định module tiếp theo.
+
+## Module 13 - `packages/websockets`
+
+### Bước 1 - Khảo sát project
+
+- Test runner của repo: `vitest` (`npm test` -> `vitest run`).
+- Cấu hình gốc: `vitest.config.mts`; alias `@nestjs/*`, setup `reflect-metadata`.
+- Test hiện có của module: `packages/websockets/test/**/*.spec.ts`.
+- Baseline chạy trước khi sinh test:
+
+```bash
+npx vitest run packages/websockets/test --reporter=dot
+```
+
+Kết quả baseline: **21 test files, 171 tests passed, 0 failed**.
+
+- Coverage baseline của test có sẵn (chỉ để tham khảo):
+  statements 86.38%, branches 83.94%, functions 81.01%, lines 86.44%.
+- Cấu hình riêng cho test AI sinh: `ai-generated-tests/vitest.config.mts`.
+  Cấu hình chỉ include `ai-generated-tests/**/*.spec.ts`; coverage include
+  `packages/websockets/**/*.{ts,js}` và loại `test/**`, `interfaces/**`, `index.ts`,
+  `*.spec.ts`, `*.test.ts`.
+
+### Bước 2 - Phân loại hàm
+
+#### In-scope (đã sinh test)
+
+| File production | Hàm/phương thức | Trạng thái |
+| --- | --- | --- |
+| `constants.ts` | toàn bộ metadata key/event name/`DEFAULT_MAX_CONCURRENT_MESSAGES` | Tested |
+| `adapters/ws-adapter.ts` | `AbstractWsAdapter`: constructor, `forceCloseConnections` getter/setter, `bindClientConnect`, `bindClientDisconnect`, `close`, `dispose` | Tested |
+| `context/exception-filters-context.ts` | `constructor`, `create`, `getGlobalMetadata` | Tested |
+| `context/ws-context-creator.ts` | `create`, `reflectCallbackParamtypes`, `reflectCallbackPattern`, `createGuardsFn`, `getMetadata`, `exchangeKeysForValues`, `createPipesFn`, `getParamValue` | Tested |
+| `context/ws-proxy.ts` | `create`, `handleError` | Tested |
+| `context/ws-metadata-constants.ts` | `DEFAULT_CALLBACK_METADATA` | Covered qua `ws-context-creator` |
+| `decorators/*.ts` | `Ack`, `ConnectedSocket`, `WebSocketServer`, `MessageBody` (mọi overload), `WebSocketGateway` (mọi overload), `SubscribeMessage` | Tested |
+| `enums/ws-paramtype.enum.ts` | `WsParamtype` | Tested |
+| `errors/invalid-socket-port.exception.ts` | `InvalidSocketPortException` | Tested |
+| `errors/ws-exception.ts` | `constructor`, `initMessage`, `getError` | Tested |
+| `exceptions/base-ws-exception-filter.ts` | `constructor`, `catch`, `handleError`, `handleUnknownError`, `isExceptionObject`, `emitMessage`, `emitErrorPayload`, `isNativeWebSocket` | Tested |
+| `exceptions/ws-exceptions-handler.ts` | `handle`, `setCustomFilters`, `invokeCustomFilters` | Tested |
+| `factories/server-and-event-streams-factory.ts` | `create` | Tested |
+| `factories/ws-params-factory.ts` | `exchangeKeyForValue`, `getPayloadProperty` | Tested |
+| `gateway-metadata-explorer.ts` | `constructor`, `explore`, `exploreMethodMetadata`, `hasAckDecorator`, `scanForServerHooks` | Tested |
+| `socket-module.ts` | `register`, `connectAllGateways`, `connectGatewayToServer`, `close`, `initializeAdapter`, `getContextCreator` | Tested |
+| `socket-server-provider.ts` | `scanForSocketServer`, `createSocketServer`, `decorateWithNamespace`, `getServerOfNamespace`, `validateNamespace` | Tested |
+| `sockets-container.ts` | `getAll`, `getOneByConfig`, `addOne`, `clear`, `generateHashByOptions` | Tested |
+| `utils/compare-element.util.ts` | `compareElementAt` | Tested |
+| `utils/get-param-args-metadata.util.ts` | `getParamArgsMetadata` | Tested |
+| `utils/merge-map-bounded.util.ts` | `mergeMapBounded`, `drain` | Tested |
+| `utils/param.utils.ts` | `createWsParamDecorator`, `createPipesWsParamDecorator` | Tested |
+| `web-sockets-controller.ts` | `connectGatewayToServer` (2 overload), `subscribeToServerEvents`, `subscribeEvents`, `getConnectionHandler`, `subscribeInitEvent`, `subscribeConnectionEvent`, `subscribeDisconnectEvent`, `subscribeMessages`, `pickResult`, `inspectEntrypointDefinitions`, `createRequestScopedHandler`, `createRequestScopedEventHandler`, `createStaticEventHandler`, `logResolutionError`, `areGlobalScopedEnhancersDurable`, `handleLifecycleHookError`, `getGlobalScopedEnhancers`, `getContextId`, `cleanupRequestScopedContext`, `assignServerToProperties`, `printSubscriptionLogs` | Tested |
+
+#### Out-of-scope
+
+- `index.ts`, `adapters/index.ts`, `decorators/index.ts`, `errors/index.ts`, `exceptions/index.ts`, `utils/index.ts`,
+  `interfaces/**`, `interfaces/hooks/**`: re-export/type-only, không có logic thực thi.
+- `internal.ts`: chỉ re-export.
+- `Readme.md`, `package.json`, `tsconfig*.json`: không có logic.
+- `packages/websockets/test/**`: test có sẵn, không sửa, chỉ dùng baseline/reference.
+
+#### Indirect dependency
+
+- `@nestjs/common`, `@nestjs/common/internal`, `@nestjs/core`, `@nestjs/core/internal`: dùng thật
+  (`ExecutionContextHost`, `ContextIdFactory`, `MetadataScanner`, `ApplicationConfig`, các context creator/consumer).
+- `rxjs` (`Subject`, `ReplaySubject`, `of`, `throwError`, `from`, operators): dùng thật.
+- `object-hash`, `iterare`, `reflect-metadata`: dùng thật.
+- `socket.io`/`@nestjs/platform-socket.io`: chỉ dùng thật trong nhánh tạo adapter mặc định của `SocketModule`;
+  adapter WebSocket được stub cho phần còn lại.
+
+### Bước 3-4 - CFG / C3 và test path
+
+Quy ước: mỗi điều kiện con là một nút quyết định riêng, short-circuit được tôn trọng.
+Các nhóm chính:
+
+- **`AbstractWsAdapter`**: `appOrHttpServer instanceof NestApplication` T/F; `client.once` là function T/F;
+  `server && isFunction(server.close)` T/F; getter/setter `forceCloseConnections`.
+- **Decorators**: `WebSocketGateway` với port integer / options object / cả hai / không tham số / số không nguyên;
+  `MessageBody` với không data, property key, pipes, options object (có/không pipes), data + options,
+  pipe-first, falsy pipes; `getParamArgsMetadata` lọc entry kế thừa cùng index.
+- **`WsException`**: string, object có message string, object message không string, number;
+  class name không có từ nào -> `'Error'`; nhánh `this.constructor` falsy (infeasible).
+- **`BaseWsExceptionFilter`**: options mặc định/tuỳ chỉnh; `includeCause` T/F;
+  cause factory mặc định/tuỳ chỉnh; `WsException` string/object/Error; unknown error;
+  native WebSocket (`readyState` number + `send`) vs Socket.IO (`emit`); client không có emit/send;
+  gửi payload lỗi có cause -> retry không cause; không cause -> rethrow; `IntrinsicException` không log.
+- **`WsExceptionsHandler`**: không client, custom filter khớp/không khớp, filters rỗng,
+  `setCustomFilters` array/không array.
+- **`WsProxy`**: kết quả non-observable, observable thành công/lỗi, throw đồng bộ, pattern mặc định `'unknown'`.
+- **`WsParamsFactory`**: args falsy; SOCKET/PAYLOAD/ACK/unknown; payload key trên object thường/array/Buffer/primitive/null;
+  own property vs inherited property; ACK tìm function.
+- **`GatewayMetadataExplorer`**: method có/không `@SubscribeMessage`; `@Ack` có/không;
+  scan server hook bỏ qua function property và property không metadata.
+- **`SocketsContainer`**: hash ổn định theo key order, phân biệt options, clear.
+- **`SocketServerProvider`**: server đã có/chưa có; namespace có/không; namespace string/RegExp/rỗng;
+  tạo root server rồi tạo namespace server.
+- **`SocketModule`**: module rỗng/nhiều module; wrapper null/`isNotMetatype`/hợp lệ; gateway metadata có/không;
+  adapter có sẵn/chưa có; memoize `adapterInitPromise`; `close` không config/không adapter/có nhiều server;
+  server falsy bị lọc; `dispose`.
+- **`WsContextCreator`**: `create` với guards/pipes/interceptors; guard cho phép/từ chối;
+  params metadata có/không (nhánh không metadata dùng default); pipes rỗng/không rỗng; custom param key;
+  cache metadata; `getParamValue` có/không pipes.
+- **`WebSocketsController`**:
+  - `connectGatewayToServer`: port không integer -> `InvalidSocketPortException`; wrapper/instance overload;
+    metadata port/options rỗng hoặc có.
+  - `subscribeToServerEvents`: static/transient, có/không global enhancers, `preview` true/false.
+  - `subscribeEvents`: init/connection/disconnect, bind connect, log.
+  - `getConnectionHandler`: disconnect trong lúc connecting được giữ lại; disconnect sau connecting;
+    không có `bindClientDisconnect`; `subscribeMessages` throw vẫn flush disconnect trong `finally`.
+  - `subscribeConnectionEvent` / `subscribeDisconnectEvent`: handler function/gateway, dedupe theo client,
+    data dạng `{ client, reason }` và backward-compatible raw client/null, không handler.
+  - `pickResult`: Observable, Promise, giá trị thường.
+  - `createRequestScopedHandler`: singleton + global enhancers, transient loadPerContext, durability,
+    lỗi handler -> filter lazy, pattern `'unknown'`.
+  - `createRequestScopedEventHandler`: static/transient, assign server, pending disconnect count,
+    cleanup khi remaining > 0 và = 0, không xoá context mới hơn, lỗi resolve không hook/enhancer,
+    filter nhận client + reason + tên hook.
+  - `createStaticEventHandler`: không hook, hook sync, throw sync, reject async, disconnect reason.
+  - `getContextId`: tạo mới (durable/non-durable), tái sử dụng context id.
+  - `assignServerToProperties`, `printSubscriptionLogs` (không constructor name/có nhiều handler).
+
+Số nhánh infeasible/không ghi nhận: **5** (chi tiết ở Bước 6).
+
+### Bước 5 - File test đã tạo
+
+- `ai-generated-tests/packages/websockets/constants.spec.ts`
+- `ai-generated-tests/packages/websockets/gateway-metadata-explorer.spec.ts`
+- `ai-generated-tests/packages/websockets/socket-module.spec.ts`
+- `ai-generated-tests/packages/websockets/socket-server-provider.spec.ts`
+- `ai-generated-tests/packages/websockets/sockets-container.spec.ts`
+- `ai-generated-tests/packages/websockets/web-sockets-controller.spec.ts`
+- `ai-generated-tests/packages/websockets/adapters/ws-adapter.spec.ts`
+- `ai-generated-tests/packages/websockets/context/exception-filters-context.spec.ts`
+- `ai-generated-tests/packages/websockets/context/ws-context-creator.spec.ts`
+- `ai-generated-tests/packages/websockets/context/ws-proxy.spec.ts`
+- `ai-generated-tests/packages/websockets/decorators/decorators.spec.ts`
+- `ai-generated-tests/packages/websockets/errors/ws-exception.spec.ts`
+- `ai-generated-tests/packages/websockets/exceptions/base-ws-exception-filter.spec.ts`
+- `ai-generated-tests/packages/websockets/exceptions/ws-exceptions-handler.spec.ts`
+- `ai-generated-tests/packages/websockets/factories/server-and-event-streams-factory.spec.ts`
+- `ai-generated-tests/packages/websockets/factories/ws-params-factory.spec.ts`
+- `ai-generated-tests/packages/websockets/utils/compare-element.util.spec.ts`
+- `ai-generated-tests/packages/websockets/utils/get-param-args-metadata.util.spec.ts`
+- `ai-generated-tests/packages/websockets/utils/merge-map-bounded.util.spec.ts`
+
+- Sử dụng Parameterized Test (`it.each`) cho: metadata constants, compare element, payload extraction,
+  namespace normalization, connection/disconnect dedupe, exception payloads.
+- Các phần phức tạp dùng mock/stub có kiểm soát: `ApplicationConfig`, `Injector`, `NestContainer`,
+  `SocketServerProvider`, `WsContextCreator`, adapter, `GraphInspector`, `ExceptionFiltersContext`.
+- `SocketModule` được test nhánh tạo adapter mặc định bằng `@nestjs/platform-socket.io` thật (không mở cổng mạng).
+
+### Bước 6 - Kết quả thực thi và coverage
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/websockets --reporter=dot
+```
+
+Kết quả: **19 test files, 230 tests passed, 0 failed, 0 lỗi biên dịch/import**.
+
+Coverage:
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/websockets --coverage --reporter=dot
+```
+
+Kết quả (`@vitest/coverage-v8`):
+
+- Statements: **99.82%** (572/573)
+- Branches: **98.32%** (294/299)
+- Functions: **100%** (158/158)
+- Lines: **99.82%** (567/568)
+
+Các nhánh còn thiếu/không ghi nhận:
+
+- `socket-server-provider.ts:83` - `options.namespace || ''`: nhánh fallback `''` không thể xảy ra vì
+  `decorateWithNamespace` chỉ được gọi khi namespace truthy.
+- `web-sockets-controller.ts:365-366` - `result instanceof Promise`: `await` đã unwrap thenable nên
+  một Promise thật không thể còn lại sau `await`.
+- `web-sockets-controller.ts:505` - nhánh bỏ qua `assignServerToProperties` của `if (!isStatic)`:
+  đã có cả test static và transient nhưng V8 không ghi nhận nhánh static (giới hạn mapping của coverage engine).
+- `web-sockets-controller.ts:672` - fallback `?? 0` của `pendingDisconnects.get(contextId)`:
+  đã có test disconnect đầu tiên trên client mới nhưng V8 không ghi nhận vế fallback.
+- `errors/ws-exception.ts:17` - `else if (this.constructor)`: `constructor` luôn tồn tại trên instance,
+  nhánh false không thể xảy ra nếu không sửa prototype.
+
+Giới hạn công cụ: `@vitest/coverage-v8` không báo C3 theo nghĩa atomic-condition trực tiếp.
+Số liệu trên là branch/statement/function/line coverage; các cặp T/F của từng điều kiện con
+được thiết kế và ghi chú trong tên test/nhóm test theo CFG ở trên. V8 có thể gộp điều kiện
+short-circuit thành một branch hoặc không ghi nhận nhánh không có statement, nên branch coverage
+không đồng nhất 1-1 với số điều kiện atomic.
+
+Lưu ý khi chạy toàn bộ suite AI sinh:
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts --reporter=dot
+```
+
+Kết quả: **147 test files, 2610 tests passed, 0 failed**.
+
+### Bước 7 - Trạng thái
+
+- Module `packages/websockets`: **hoàn tất**.
+- Số hàm in-scope: **toàn bộ hàm public/private của module đã sinh test**, **0 bỏ qua**, **0 BLOCKED**.
+- Coverage: statements/lines 99.82%, functions 100%, branches 98.32% (5 nhánh infeasible/không ghi nhận đã nêu).
 - Không sửa production code, file build/dependency hay test có sẵn.
 - Đang dừng, chờ chỉ định module tiếp theo. Khi tiếp tục, đọc file này để tránh sinh lại test đã có.
