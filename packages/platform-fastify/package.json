@@ -40,7 +40,7 @@
     "fastify": "5.12.8",
     "find-my-way": "9.10.0",
     "light-my-request": "6.8.0",
-    "path-to-regexp": "8.4.2",
+    "path-to-regexp": "9.0.0",
     "tslib": "2.9.1"
   },
   "peerDependencies": {
