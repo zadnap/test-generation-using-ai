@@ -10,7 +10,6 @@ npm install
 4. Prompt và chọn module được giao
 
 - Prompt cho AI gen ra test vào trong folder ai-generated-tests
-- Đừng sửa vitest.config.mts
 - Lưu ý là các thay đổi được push lên github chỉ được nằm trong ai-generated-tests và test_generation_progress.md thôi nhé
 
 5. Prompt tiếp tới khi nào hết quota (vắt cực khô)
