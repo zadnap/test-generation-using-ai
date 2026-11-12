@@ -1,0 +1,376 @@
+import {
+  NO_MESSAGE_HANDLER,
+  REDIS_DEFAULT_HOST,
+  REDIS_DEFAULT_PORT,
+} from '../constants.js';
+import { RedisContext } from '../ctx-host/index.js';
+import { Transport } from '../enums/index.js';
+import {
+  RedisEvents,
+  RedisEventsMap,
+  RedisStatus,
+} from '../events/redis.events.js';
+import {
+  IncomingRequest,
+  RedisOptions,
+  TransportId,
+} from '../interfaces/index.js';
+import { Server } from './server.js';
+import { isUndefined } from '@nestjs/common/internal';
+
+// To enable type safety for Redis. This cant be uncommented by default
+// because it would require the user to install the ioredis package even if they dont use Redis
+// Otherwise, TypeScript would fail to compile the code.
+//
+// type Redis = import('ioredis').Redis;
+type Redis = any;
+
+/**
+ * @publicApi
+ */
+export class ServerRedis extends Server<RedisEvents, RedisStatus> {
+  public transportId: TransportId = Transport.REDIS;
+
+  protected subClient: Redis;
+  protected pubClient: Redis;
+  protected isManuallyClosed = false;
+  protected wasInitialConnectionSuccessful = false;
+  protected pendingEventListeners: Array<{
+    event: keyof RedisEvents;
+    callback: RedisEvents[keyof RedisEvents];
+  }> = [];
+
+  constructor(protected readonly options: Required<RedisOptions>['options']) {
+    super();
+
+    this.initializeSerializer(options);
+    this.initializeDeserializer(options);
+  }
+
+  public async listen(
+    callback: (err?: unknown, ...optionalParams: unknown[]) => void,
+  ) {
+    try {
+      this.subClient = await this.createRedisClient();
+      this.pubClient = await this.createRedisClient();
+      // A close() before this listen() must not keep retries off for good.
+      // Set once the replacement clients exist, so an old client cannot report
+      // its own "end" through the flag while the swap is in progress
+      this.isManuallyClosed = false;
+
+      [this.subClient, this.pubClient].forEach((client, index) => {
+        const type = index === 0 ? 'sub' : 'pub';
+        this.registerErrorListener(client);
+        this.registerReconnectListener(client);
+        this.registerReadyListener(client);
+        this.registerEndListener(client);
+        this.pendingEventListeners.forEach(({ event, callback }) =>
+          client.on(event, (...args: [any]) => callback(type, ...args)),
+        );
+      });
+      this.pendingEventListeners = [];
+
+      this.start(callback);
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  public start(callback?: () => void) {
+    void Promise.all([this.subClient.connect(), this.pubClient.connect()])
+      .then(() => this.bindEvents(this.subClient, this.pubClient))
+      .then(() => callback?.())
+      .catch(callback);
+  }
+
+  public async bindEvents(subClient: Redis, pubClient: Redis): Promise<void> {
+    subClient.on(
+      this.options?.wildcards ? 'pmessage' : 'message',
+      this.getMessageHandler(pubClient).bind(this),
+    );
+    const subscribePatterns = [...this.messageHandlers.keys()];
+    // Awaited so that a rejected subscription (e.g., an ACL without access to
+    // the channel) fails `listen()` instead of going unhandled.
+    await Promise.all(
+      subscribePatterns.map(pattern => {
+        const { isEventHandler } = this.messageHandlers.get(pattern)!;
+
+        const channel = isEventHandler
+          ? pattern
+          : this.getRequestPattern(pattern);
+
+        return this.options?.wildcards
+          ? subClient.psubscribe(channel)
+          : subClient.subscribe(channel);
+      }),
+    );
+  }
+
+  public async close() {
+    this.isManuallyClosed = true;
+    this.pubClient && (await this.quitClient(this.pubClient));
+    this.subClient && (await this.quitClient(this.subClient));
+    this.pendingEventListeners = [];
+  }
+
+  // `quit()` rejects when the command cannot be sent (e.g., while
+  // reconnecting with the offline queue disabled), which would leave the
+  // other client open. Close the connection right away instead.
+  private async quitClient(client: Redis) {
+    try {
+      await client.quit();
+    } catch {
+      client.disconnect();
+    }
+  }
+
+  public async createRedisClient(): Promise<Redis> {
+    const clientInfoTag = this.getOptionsProp(this.options, 'clientInfoTag');
+    const redisPackage = await this.loadPackage(
+      'ioredis',
+      ServerRedis.name,
+      () => import('ioredis'),
+    );
+    const RedisClient: any = redisPackage.default || redisPackage;
+    return new RedisClient({
+      port: REDIS_DEFAULT_PORT,
+      host: REDIS_DEFAULT_HOST,
+      ...this.getClientOptions(),
+      ...(clientInfoTag && { clientInfoTag }),
+      lazyConnect: true,
+    });
+  }
+
+  public getMessageHandler(pub: Redis) {
+    return this.options?.wildcards
+      ? (channel: string, pattern: string, buffer: string) =>
+          this.handleMessage(channel, buffer, pub, pattern).catch(err =>
+            this.handleError(err),
+          )
+      : (channel: string, buffer: string) =>
+          this.handleMessage(channel, buffer, pub, channel).catch(err =>
+            this.handleError(err),
+          );
+  }
+
+  public async handleMessage(
+    channel: string,
+    buffer: string,
+    pub: Redis,
+    pattern: string,
+  ) {
+    const rawMessage = this.parseMessage(buffer);
+    if (
+      this.options?.wildcards &&
+      this.isOwnReply(channel, pattern, rawMessage)
+    ) {
+      return;
+    }
+    const packet = await this.deserializer.deserialize(rawMessage, { channel });
+    const redisCtx = new RedisContext([pattern, packet.metadata]);
+
+    if (isUndefined((packet as IncomingRequest).id)) {
+      return this.handleEvent(channel, packet, redisCtx);
+    }
+    this.assertValidPacketId((packet as IncomingRequest).id);
+    // With wildcards, `channel` is the subscribed pattern (e.g. "users.*") and
+    // `pattern` is the concrete channel the request was published to. The
+    // client waits for the reply on the concrete one, so reply there.
+    const publish = this.getPublisher(
+      pub,
+      pattern,
+      (packet as IncomingRequest).id,
+      redisCtx,
+    );
+    const handler = this.getHandlerByPattern(channel);
+
+    if (!handler) {
+      const status = 'error';
+      const noHandlerPacket = {
+        id: (packet as IncomingRequest).id,
+        status,
+        err: NO_MESSAGE_HANDLER,
+      };
+      return publish(noHandlerPacket);
+    }
+    if (handler.isEventHandler && this.isAnsweredByMessageHandler(pattern)) {
+      // Redis delivers the request to every subscribed pattern that matches
+      // its channel, so the message handler subscribed to it answers it.
+      return this.handleEvent(channel, packet, redisCtx);
+    }
+    if (channel !== pattern && this.isAnsweredByMessageHandler(pattern)) {
+      // The message handler subscribed to the channel itself answers it alone
+      return;
+    }
+    this.warnIfEventHandlerReplies(handler, channel);
+    return this.handleRequest(
+      redisCtx,
+      async () =>
+        this.transformToObservable(await handler(packet.data, redisCtx)),
+      publish,
+    );
+  }
+
+  /**
+   * With wildcards, whether a message handler is subscribed to the channel a
+   * request was published to as well. Only a subscription to that very
+   * channel is found: Redis' glob-style matching is not reproduced here.
+   */
+  private isAnsweredByMessageHandler(channel: string) {
+    if (!this.options?.wildcards) {
+      return false;
+    }
+    return [...this.messageHandlers].some(
+      ([pattern, handler]) =>
+        !handler.isEventHandler && this.getRequestPattern(pattern) === channel,
+    );
+  }
+
+  /**
+   * With wildcards, a subscription such as "users.*" also matches the channels
+   * this server replies on ("users.created.reply"). Those replies are skipped
+   * unless the subscription itself targets reply channels.
+   */
+  private isOwnReply(
+    subscription: string,
+    channel: string,
+    message: Record<string, any>,
+  ) {
+    const replySuffix = this.getReplyPattern('');
+    return (
+      channel.endsWith(replySuffix) &&
+      !subscription.endsWith(replySuffix) &&
+      !isUndefined(message?.id) &&
+      isUndefined(message?.pattern)
+    );
+  }
+
+  public getPublisher(pub: Redis, pattern: any, id: string, ctx: RedisContext) {
+    return (response: any) => {
+      Object.assign(response, { id });
+      const outgoingResponse = this.serializer.serialize(response);
+
+      return pub.publish(
+        this.getReplyPattern(pattern),
+        JSON.stringify(outgoingResponse),
+      );
+    };
+  }
+
+  public parseMessage(content: any): Record<string, any> {
+    try {
+      return JSON.parse(content);
+    } catch (e) {
+      return content;
+    }
+  }
+
+  public getRequestPattern(pattern: string): string {
+    return pattern;
+  }
+
+  public getReplyPattern(pattern: string): string {
+    return `${pattern}.reply`;
+  }
+
+  public registerErrorListener(client: any) {
+    client.on(RedisEventsMap.ERROR, (err: any) => this.logger.error(err));
+  }
+
+  public registerReconnectListener(client: {
+    on: (event: string, fn: () => void) => void;
+  }) {
+    client.on(RedisEventsMap.RECONNECTING, () => {
+      if (this.isManuallyClosed) {
+        return;
+      }
+      this._status$.next(RedisStatus.RECONNECTING);
+
+      if (this.wasInitialConnectionSuccessful) {
+        this.logger.log('Reconnecting to Redis...');
+      }
+    });
+  }
+
+  public registerReadyListener(client: {
+    on: (event: string, fn: () => void) => void;
+  }) {
+    client.on(RedisEventsMap.READY, () => {
+      this._status$.next(RedisStatus.CONNECTED);
+
+      this.logger.log('Connected to Redis. Subscribing to channels...');
+
+      if (!this.wasInitialConnectionSuccessful) {
+        this.wasInitialConnectionSuccessful = true;
+      }
+    });
+  }
+
+  public registerEndListener(client: {
+    on: (event: string, fn: () => void) => void;
+  }) {
+    client.on('end', () => {
+      if (
+        this.isManuallyClosed ||
+        // The "end" of a client a newer "listen" replaced: quit() resolves
+        // before ioredis emits "end", so this can arrive while the
+        // replacement clients are already connected
+        ![this.subClient, this.pubClient].includes(client)
+      ) {
+        return;
+      }
+      this._status$.next(RedisStatus.DISCONNECTED);
+
+      this.logger.error(
+        'Disconnected from Redis. No further reconnection attempts will be made.',
+      );
+    });
+  }
+
+  public getClientOptions(): Partial<RedisOptions['options']> {
+    const retryStrategy = (times: number) => this.createRetryStrategy(times);
+
+    return {
+      ...(this.options || {}),
+      retryStrategy,
+    };
+  }
+
+  public createRetryStrategy(times: number): undefined | number | void {
+    if (this.isManuallyClosed) {
+      return undefined;
+    }
+    if (!this.getOptionsProp(this.options, 'retryAttempts')) {
+      this.logger.error(
+        'Redis connection closed and retry attempts not specified',
+      );
+      return;
+    }
+    if (times > this.getOptionsProp(this.options, 'retryAttempts', 0)) {
+      this.logger.error(`Retry time exhausted`);
+      return;
+    }
+    return this.getOptionsProp(this.options, 'retryDelay', 5000);
+  }
+
+  public unwrap<T>(): T {
+    if (!this.pubClient || !this.subClient) {
+      throw new Error(
+        'Not initialized. Please call the "listen"/"startAllMicroservices" method before accessing the server.',
+      );
+    }
+    return [this.pubClient, this.subClient] as T;
+  }
+
+  public on<
+    EventKey extends keyof RedisEvents = keyof RedisEvents,
+    EventCallback extends RedisEvents[EventKey] = RedisEvents[EventKey],
+  >(event: EventKey, callback: EventCallback) {
+    if (this.subClient && this.pubClient) {
+      this.subClient.on(event, (...args: [any]) => callback('sub', ...args));
+      this.pubClient.on(event, (...args: [any]) => callback('pub', ...args));
+    } else {
+      this.pendingEventListeners.push({ event, callback });
+    }
+  }
+}

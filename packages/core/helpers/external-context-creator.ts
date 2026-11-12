@@ -1,0 +1,408 @@
+import type { ContextType, PipeTransform } from '@nestjs/common';
+import {
+  ArgumentMetadata,
+  ForbiddenException,
+  type ParamData,
+} from '@nestjs/common';
+import {
+  CUSTOM_ROUTE_ARGS_METADATA,
+  type Controller,
+  isEmptyArray,
+} from '@nestjs/common/internal';
+import { isObservable, lastValueFrom } from 'rxjs';
+import { ExternalExceptionFilterContext } from '../exceptions/external-exception-filter-context.js';
+import { FORBIDDEN_MESSAGE } from '../guards/constants.js';
+import { GuardsConsumer, GuardsContextCreator } from '../guards/index.js';
+import { STATIC_CONTEXT } from '../injector/constants.js';
+import { NestContainer } from '../injector/container.js';
+import { ContextId } from '../injector/instance-wrapper.js';
+import { ModulesContainer } from '../injector/modules-container.js';
+import {
+  InterceptorsConsumer,
+  InterceptorsContextCreator,
+} from '../interceptors/index.js';
+import { PipesConsumer, PipesContextCreator } from '../pipes/index.js';
+import { getClassRef } from './class-ref-registry.js';
+import { ContextUtils, ParamProperties } from './context-utils.js';
+import { ExternalErrorProxy } from './external-proxy.js';
+import { HandlerMetadataStorage } from './handler-metadata-storage.js';
+import { ExternalHandlerMetadata } from './interfaces/external-handler-metadata.interface.js';
+import { ParamsMetadata } from './interfaces/params-metadata.interface.js';
+
+export interface ParamsFactory {
+  exchangeKeyForValue(type: number, data: ParamData, args: any): any;
+}
+
+export interface ExternalContextOptions {
+  guards?: boolean;
+  interceptors?: boolean;
+  filters?: boolean;
+}
+
+export class ExternalContextCreator {
+  private readonly contextUtils = new ContextUtils();
+  private readonly externalErrorProxy = new ExternalErrorProxy();
+  private readonly handlerMetadataStorage =
+    new HandlerMetadataStorage<ExternalHandlerMetadata>();
+  private container: NestContainer;
+
+  constructor(
+    private readonly guardsContextCreator: GuardsContextCreator,
+    private readonly guardsConsumer: GuardsConsumer,
+    private readonly interceptorsContextCreator: InterceptorsContextCreator,
+    private readonly interceptorsConsumer: InterceptorsConsumer,
+    private readonly modulesContainer: ModulesContainer,
+    private readonly pipesContextCreator: PipesContextCreator,
+    private readonly pipesConsumer: PipesConsumer,
+    private readonly filtersContextCreator: ExternalExceptionFilterContext,
+  ) {}
+
+  static fromContainer(container: NestContainer): ExternalContextCreator {
+    const guardsContextCreator = new GuardsContextCreator(
+      container,
+      container.applicationConfig,
+    );
+    const guardsConsumer = new GuardsConsumer();
+    const interceptorsContextCreator = new InterceptorsContextCreator(
+      container,
+      container.applicationConfig,
+    );
+    const interceptorsConsumer = new InterceptorsConsumer();
+    const pipesContextCreator = new PipesContextCreator(
+      container,
+      container.applicationConfig,
+    );
+    const pipesConsumer = new PipesConsumer();
+    const filtersContextCreator = new ExternalExceptionFilterContext(
+      container,
+      container.applicationConfig,
+    );
+
+    const externalContextCreator = new ExternalContextCreator(
+      guardsContextCreator,
+      guardsConsumer,
+      interceptorsContextCreator,
+      interceptorsConsumer,
+      container.getModules(),
+      pipesContextCreator,
+      pipesConsumer,
+      filtersContextCreator,
+    );
+    externalContextCreator.container = container;
+    return externalContextCreator;
+  }
+
+  public create<
+    TParamsMetadata extends ParamsMetadata = ParamsMetadata,
+    TContext extends string = ContextType,
+  >(
+    instance: Controller,
+    callback: (...args: unknown[]) => unknown,
+    methodName: string,
+    metadataKey?: string,
+    paramsFactory?: ParamsFactory,
+    contextId = STATIC_CONTEXT,
+    inquirerId?: string,
+    options: ExternalContextOptions = {
+      interceptors: true,
+      guards: true,
+      filters: true,
+    },
+    contextType: TContext = 'http' as TContext,
+  ) {
+    const classRef = getClassRef(instance);
+    const moduleKey =
+      this.getContextModuleKey(classRef) ||
+      this.getHostModuleKey(instance, inquirerId);
+    // Transient enhancers are created per host, so those of a static entry
+    // provider can only be found with that provider as the inquirer.
+    inquirerId ??= this.modulesContainer
+      .get(moduleKey)
+      ?.entryProviders.find(
+        item => item.token === classRef || item.instance === instance,
+      )?.id;
+    const { argsLength, paramtypes, getParamsMetadata } = this.getMetadata<
+      TParamsMetadata,
+      TContext
+    >(instance, methodName, metadataKey, paramsFactory, contextType);
+    const pipes = this.pipesContextCreator.create(
+      instance,
+      callback,
+      moduleKey,
+      contextId,
+      inquirerId,
+    );
+    const guards = this.guardsContextCreator.create(
+      instance,
+      callback,
+      moduleKey,
+      contextId,
+      inquirerId,
+    );
+    const exceptionFilter = this.filtersContextCreator.create(
+      instance,
+      callback as (...args: any[]) => any,
+      moduleKey,
+      contextId,
+      inquirerId,
+    );
+    const interceptors = options.interceptors
+      ? this.interceptorsContextCreator.create(
+          instance,
+          callback,
+          moduleKey,
+          contextId,
+          inquirerId,
+        )
+      : [];
+
+    const paramsMetadata = getParamsMetadata(moduleKey, contextId, inquirerId);
+    const paramsOptions = paramsMetadata
+      ? this.contextUtils.mergeParamsMetatypes(paramsMetadata, paramtypes)
+      : [];
+
+    const fnCanActivate = options.guards
+      ? this.createGuardsFn(guards, instance, callback, contextType)
+      : null;
+    const fnApplyPipes = this.createPipesFn(pipes, paramsOptions);
+    const handler =
+      (initialArgs: unknown[], ...args: unknown[]) =>
+      async () => {
+        if (fnApplyPipes) {
+          await fnApplyPipes(initialArgs, ...args);
+          return callback.apply(instance, initialArgs);
+        }
+        return callback.apply(instance, args);
+      };
+
+    const target = async (...args: any[]) => {
+      const initialArgs = this.contextUtils.createNullArray(argsLength);
+      fnCanActivate && (await fnCanActivate(args));
+
+      const result = await this.interceptorsConsumer.intercept(
+        interceptors,
+        args,
+        instance,
+        callback,
+        handler(initialArgs, ...args),
+        contextType,
+      );
+      return this.transformToResult(result);
+    };
+    return options.filters
+      ? this.externalErrorProxy.createProxy(
+          target,
+          exceptionFilter,
+          contextType,
+        )
+      : target;
+  }
+
+  public getMetadata<TMetadata, TContext extends string = ContextType>(
+    instance: Controller,
+    methodName: string,
+    metadataKey?: string,
+    paramsFactory?: ParamsFactory,
+    contextType?: TContext,
+  ): ExternalHandlerMetadata {
+    // The metadata is built for one context type (the `ExecutionContext` that
+    // param decorators receive) and one metadata key, and two libraries may
+    // wrap the same method with different ones: cache an entry for each.
+    const cacheKey = `${contextType ?? ''}:${metadataKey ?? ''}:${methodName}`;
+    const cacheMetadata = this.handlerMetadataStorage.get(instance, cacheKey);
+    if (cacheMetadata) {
+      return cacheMetadata;
+    }
+    const metadata =
+      this.contextUtils.reflectCallbackMetadata<TMetadata>(
+        instance,
+        methodName,
+        metadataKey || '',
+      ) || {};
+    const keys = Object.keys(metadata);
+    const argsLength = this.contextUtils.getArgumentsLength(keys, metadata);
+    const paramtypes = this.contextUtils.reflectCallbackParamtypes(
+      instance,
+      methodName,
+    );
+    const contextFactory = this.contextUtils.getContextFactory<TContext>(
+      contextType!,
+      instance,
+      instance[methodName],
+    );
+    const getParamsMetadata = (
+      moduleKey: string,
+      contextId = STATIC_CONTEXT,
+      inquirerId?: string,
+    ) =>
+      paramsFactory
+        ? this.exchangeKeysForValues(
+            keys,
+            metadata,
+            moduleKey,
+            paramsFactory,
+            contextId,
+            inquirerId,
+            contextFactory,
+          )
+        : null;
+
+    const handlerMetadata: ExternalHandlerMetadata = {
+      argsLength,
+      paramtypes,
+      getParamsMetadata: getParamsMetadata as any,
+    };
+    this.handlerMetadataStorage.set(instance, cacheKey, handlerMetadata);
+    return handlerMetadata;
+  }
+
+  public getContextModuleKey(moduleCtor: Function | undefined): string {
+    const emptyModuleKey = '';
+    if (!moduleCtor) {
+      return emptyModuleKey;
+    }
+    const moduleContainerEntries = this.modulesContainer.entries();
+    for (const [key, moduleRef] of moduleContainerEntries) {
+      if (moduleRef.hasProvider(moduleCtor)) {
+        return key;
+      }
+    }
+    return emptyModuleKey;
+  }
+
+  /**
+   * Returns the key of the module of a host registered under a token other
+   * than its class (e.g., `{ provide: 'TOKEN', useClass: Resolver }`): the
+   * module whose providers include the given inquirer or, without one, the
+   * given instance.
+   */
+  private getHostModuleKey(instance: object, inquirerId?: string): string {
+    for (const [key, moduleRef] of this.modulesContainer.entries()) {
+      const host = inquirerId
+        ? moduleRef.getProviderById(inquirerId)
+        : [...moduleRef.providers.values()].find(
+            wrapper => !wrapper.isAlias && wrapper.instance === instance,
+          );
+      if (host) {
+        return key;
+      }
+    }
+    return '';
+  }
+
+  public exchangeKeysForValues<TMetadata = any>(
+    keys: string[],
+    metadata: TMetadata,
+    moduleContext: string,
+    paramsFactory: ParamsFactory,
+    contextId = STATIC_CONTEXT,
+    inquirerId?: string,
+    contextFactory = this.contextUtils.getContextFactory('http'),
+  ): ParamProperties[] {
+    this.pipesContextCreator.setModuleContext(moduleContext);
+
+    return keys.map(key => {
+      const { index, data, pipes: pipesCollection, schema } = metadata[key];
+      const pipes = this.pipesContextCreator.createConcreteContext(
+        pipesCollection,
+        contextId,
+        inquirerId,
+      );
+      const type = this.contextUtils.mapParamType(key);
+
+      if (key.includes(CUSTOM_ROUTE_ARGS_METADATA)) {
+        const { factory } = metadata[key];
+        const customExtractValue = this.contextUtils.getCustomFactory(
+          factory,
+          data,
+          contextFactory,
+        );
+        return {
+          index,
+          extractValue: customExtractValue,
+          type,
+          data,
+          pipes,
+          schema,
+        };
+      }
+      const numericType = Number(type);
+      const extractValue = (...args: unknown[]) =>
+        paramsFactory.exchangeKeyForValue(numericType, data, args);
+
+      return { index, extractValue, type: numericType, data, pipes, schema };
+    });
+  }
+
+  public createPipesFn(
+    pipes: PipeTransform[],
+    paramsOptions: (ParamProperties & { metatype?: unknown })[],
+  ) {
+    const pipesFn = async (args: unknown[], ...params: unknown[]) => {
+      const resolveParamValue = async (
+        param: ParamProperties & { metatype?: unknown },
+      ) => {
+        const {
+          index,
+          extractValue,
+          type,
+          data,
+          metatype,
+          pipes: paramPipes,
+          schema,
+        } = param;
+        const value = extractValue(...params);
+
+        args[index] = await this.getParamValue(
+          value,
+          { metatype, type, data, schema } as ArgumentMetadata,
+          pipes.concat(paramPipes),
+        );
+      };
+      await Promise.all(paramsOptions.map(resolveParamValue));
+    };
+    return paramsOptions.length ? pipesFn : null;
+  }
+
+  public async getParamValue<T>(
+    value: T,
+    metadata: ArgumentMetadata,
+    pipes: PipeTransform[],
+  ): Promise<any> {
+    return isEmptyArray(pipes)
+      ? value
+      : this.pipesConsumer.apply(value, metadata, pipes);
+  }
+
+  public async transformToResult(resultOrDeferred: any) {
+    if (isObservable(resultOrDeferred)) {
+      return lastValueFrom(resultOrDeferred);
+    }
+    return resultOrDeferred;
+  }
+
+  public createGuardsFn<TContext extends string = ContextType>(
+    guards: any[],
+    instance: Controller,
+    callback: (...args: any[]) => any,
+    contextType?: TContext,
+  ): Function | null {
+    const canActivateFn = async (args: any[]) => {
+      const canActivate = await this.guardsConsumer.tryActivate<TContext>(
+        guards,
+        args,
+        instance,
+        callback,
+        contextType,
+      );
+      if (!canActivate) {
+        throw new ForbiddenException(FORBIDDEN_MESSAGE);
+      }
+    };
+    return guards.length ? canActivateFn : null;
+  }
+
+  public registerRequestProvider<T = any>(request: T, contextId: ContextId) {
+    this.container.registerRequestProvider<T>(request, contextId);
+  }
+}
