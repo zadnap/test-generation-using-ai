@@ -2,13 +2,14 @@
 
 ## Module hiện tại
 
-- Module: `packages/websockets` (hoàn tất)
-- Module trước: `packages/platform-fastify`, `packages/platform-socket.io`, `packages/common/module-utils`, `packages/common/file-stream`, `packages/common/serializer`, `packages/common/enums`, `packages/common/exceptions`, `packages/common/decorators`, `packages/common/interfaces`, `packages/common/services`, `packages/common/utils`, `packages/common/pipes` (hoàn tất)
+- Module vừa hoàn tất: `packages/platform-ws` (hoàn tất 2026-11-12, xem Module 16). Đang chờ chỉ định module tiếp theo.
+- Module hoàn tất gần nhất trước đó: `packages/microservices`
+- Module trước: `packages/websockets`, `packages/platform-fastify`, `packages/platform-socket.io`, `packages/core`, `packages/common/module-utils`, `packages/common/file-stream`, `packages/common/serializer`, `packages/common/enums`, `packages/common/exceptions`, `packages/common/decorators`, `packages/common/interfaces`, `packages/common/services`, `packages/common/utils`, `packages/common/pipes` (hoàn tất)
 - Repository: `nestjs/nest` (TypeScript, ESM)
 - Test framework: Vitest `5.1.0`
 - Coverage engine: `@vitest/coverage-v8`
 - Ngôn ngữ test: TypeScript (`*.spec.ts`)
-- Thư mục test AI sinh: `ai-generated-tests/packages/websockets/`
+- Thư mục test AI sinh: `ai-generated-tests/packages/platform-ws/` (2 file `.spec.ts`, 61 test)
 - Không sửa production code, file build/dependency hay test có sẵn.
 
 ## Module 1 - `packages/common/pipes`
@@ -1834,3 +1835,378 @@ Kết quả: **147 test files, 2610 tests passed, 0 failed**.
 - Coverage: statements/lines 99.82%, functions 100%, branches 98.32% (5 nhánh infeasible/không ghi nhận đã nêu).
 - Không sửa production code, file build/dependency hay test có sẵn.
 - Đang dừng, chờ chỉ định module tiếp theo. Khi tiếp tục, đọc file này để tránh sinh lại test đã có.
+
+## Module 14 - `packages/microservices` — BLOCKED (đã xử lý ở Module 15)
+
+Ngày khảo sát: 2026-11-12. Dừng tại Bước 1 theo ràng buộc: baseline build/test không chạy được hoặc lỗi ngoài phạm vi module thì dừng và báo.
+
+### Bước 1 - Khảo sát project và baseline
+
+- Đã đọc tiến độ trước đó; chưa có test AI sinh cho `microservices`.
+- Repository NestJS monorepo, npm workspaces `packages/*`, TypeScript **5.9.3**, ESM (`type: module`). Node yêu cầu >=20; môi trường phiên làm việc Node **24.18.0**.
+- `tsconfig.json`: target ES2023, module/moduleResolution Node16, legacy decorators, emitDecoratorMetadata; alias `@nestjs/*` đến source của từng package.
+- Source module: `packages/microservices/`; test có sẵn: `packages/microservices/test/**/*.spec.ts`. Có output `.js`/`.d.ts` cạnh `.ts`, không xem output build là hàm production độc lập.
+- Framework: Vitest **5.1.0**, `describe`/`it`, hooks và `vi.fn`/`vi.spyOn` cho mock/stub; parameterized test **`it.each` có sẵn**. RxJS **7.8.2**, EventEmitter và reflect-metadata hỗ trợ test double/fixture theo test hiện có.
+- Runner gốc `vitest.config.mts`: include `packages/**/*.spec.ts`, setup reflect-metadata; plugin resolve `.js` import sang `.ts` thật; cấu hình Oxc cho decorators.
+- Test mới dự kiến chỉ ở `ai-generated-tests/packages/microservices/`, mỗi production file có logic một file `.spec.ts`, mỗi hàm một nhóm test, không assertion. **Chưa tạo thư mục hay file test mới.**
+- Thư viện transport đã có trong repo: @grpc/grpc-js, @grpc/proto-loader, kafkajs, mqtt, nats, ioredis, amqplib, amqp-connection-manager. Không cài thêm dependency.
+
+Lệnh chạy toàn bộ test có sẵn:
+
+```bash
+npm test -- --reporter=dot
+```
+
+Lệnh chạy một file test có sẵn:
+
+```bash
+npx vitest run packages/microservices/test/client/client-tcp.spec.ts --reporter=dot
+```
+
+Lệnh chạy module baseline đã thực thi:
+
+```bash
+npx vitest run packages/microservices/test --reporter=dot
+```
+
+Kết quả module baseline: **72 test files passed, 1539 tests passed, 0 failed**, 13.07 giây.
+
+Baseline toàn repo đã thực thi bằng `npm test -- --reporter=dot`:
+
+- **345 test files passed / 346 tổng số file**.
+- **6075 tests passed / 6114 tổng số test** theo summary runner.
+- Không có assertion failure được báo; **1 unhandled error**, lượt chạy không thành công.
+- Lỗi: `[vitest-pool]: Worker forks emitted error`.
+- Nguyên nhân được runner báo: worker thoát bất ngờ với **exit code 1** trong trạng thái started khi chạy `packages/core/test/nest-application-context.spec.ts`.
+- 39 test còn lại không được báo pass; không coi chúng là fail hoặc đã được thực thi đầy đủ.
+- Lỗi nằm ngoài module `microservices`. Chưa chẩn đoán nguyên nhân sâu hơn và không sửa test/production của `core` theo giới hạn phạm vi.
+
+Coverage tools đã có: `@vitest/coverage-v8` và `@vitest/coverage-istanbul` **5.1.0**. Đã kiểm tra CLI có `--coverage.provider`, `--coverage.include`, `--coverage.exclude`, `--coverage.reporter`, `--coverage.reportsDirectory`, có thể đo mà không sửa build/config.
+
+Lệnh tham khảo cho test AI sinh, chỉ dùng sau khi baseline được giải quyết và có test mới:
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/microservices --reporter=dot
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/microservices --coverage --coverage.provider=v8 --coverage.include='packages/microservices/**/*.ts' --coverage.exclude='**/*.d.ts' --coverage.exclude='**/index.ts' --coverage.exclude='**/*.interface.ts' --coverage.exclude='packages/microservices/test/**' --coverage.exclude='packages/microservices/interfaces/**' --coverage.exclude='packages/microservices/external/**' --coverage.exclude='packages/microservices/module/interfaces/**' --coverage.reportsDirectory=ai-generated-tests/coverage-microservices --coverage.reporter=text --coverage.reporter=json-summary --reporter=dot
+```
+
+Các lệnh tham khảo trên **chưa chạy**. `@vitest/coverage-v8`/Istanbul không báo trực tiếp C3 atomic-condition T/F theo định nghĩa yêu cầu; branch coverage không được quy đổi hay gọi là C3.
+
+### Bước 2-6 - Chưa thực hiện do stop gate ở Bước 1
+
+- Chưa thống kê đầy đủ class/method/function, chưa phân loại hoặc tính số hàm in-scope.
+- Chưa thiết kế CFG, đánh số decision/condition, tính D+1, chọn test path/input.
+- Chưa sinh hoặc chạy test mới; không tự tiếp tục các bước sau khi baseline thất bại.
+- Số hàm đã sinh test: **0**; số hàm bỏ qua sau phân tích: **0**; số hàm bị chặn: **chưa thống kê**, toàn module bị chặn ở baseline.
+- Kết quả test mới: **0 pass, 0 fail**, không có lỗi test mới vì chưa sinh test.
+- C3: **N/A — chưa đo**. Statement/branch/function/line coverage cho test mới: **N/A**.
+
+### Bước 7 - Lưu tiến độ và dừng
+
+- Trạng thái module `packages/microservices`: **BLOCKED — baseline toàn repo lỗi ngoài phạm vi**.
+- Không sửa production, build/dependency, hay test có sẵn; không đọc/ghi file bí mật; không commit.
+- Thay đổi thử nghiệm ở `ai-generated-tests/vitest.config.mts` đã được khôi phục về nguyên trạng; `git diff` xác nhận không còn thay đổi cấu hình trước khi ghi báo cáo này.
+- Chỉ cập nhật file tiến độ được yêu cầu. Không chuyển sang module khác; chờ chỉ định của người dùng sau khi vấn đề baseline được giải quyết.
+
+## Module 15 - `packages/microservices` (retry, hoàn tất)
+
+Ngày: 2026-11-12. Giải quyết stop-gate của Module 14 bằng baseline theo đúng phạm vi module.
+
+### Bước 1 - Khảo sát lại và baseline
+
+- Lệnh baseline module:
+
+```bash
+npx vitest run packages/microservices/test --reporter=dot
+```
+
+Kết quả: **72 test files passed, 1539 tests passed, 0 failed** (8.44s).
+
+- Baseline toàn repo vẫn còn lỗi worker **ngoài phạm vi** ở `packages/core/test/nest-application-context.spec.ts`
+  (`Worker forks emitted error`, exit code 1) như ghi nhận ở Module 14. Lỗi này không thuộc `microservices`,
+  không sửa; mọi test mới được chạy bằng cấu hình riêng nên không phụ thuộc file lỗi đó.
+- Framework/libs: Vitest 5.1.0 (`describe`/`it`/`it.each`, `vi.fn`/`vi.spyOn`), `@vitest/coverage-v8`,
+  rxjs 7.8.2, reflect-metadata. Transport libs có sẵn trong repo (kafkajs, mqtt, amqplib,
+  amqp-connection-manager, @grpc/grpc-js, @grpc/proto-loader, nats, ioredis); **không cài thêm dependency**.
+- Test AI sinh nằm ở `ai-generated-tests/packages/microservices/`, mỗi production file một `.spec.ts`,
+  import đường dẫn tương đối tới source với đuôi `.js`. Không sửa `ai-generated-tests/vitest.config.mts`
+  (coverage truyền qua CLI).
+- Lệnh chạy test mới:
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/microservices --reporter=dot
+```
+
+### Bước 2 - Thống kê và phân loại hàm
+
+#### In-scope (đã sinh test)
+
+| Nhóm | File production | Hàm in-scope chính |
+| --- | --- | --- |
+| `client/` | client-grpc, client-kafka, client-mqtt, client-nats, client-proxy, client-proxy-factory, client-redis, client-rmq, client-tcp | constructor, connect/close, createClient, publish, dispatchEvent, handleMessage/handleResponse, callback listeners, status/unwrap/on và các helper nội bộ |
+| `server/` | server, server-factory, server-tcp, server-redis, server-nats, server-mqtt, server-rmq, server-kafka, server-grpc | constructor, listen/close, createClient/createServer, bindEvents, handleMessage/handleEvent, reply/send, routing pattern, status/unwrap/on và helper nội bộ |
+| `container.ts` | container | getAllClients, addClient, clear |
+| `context/` | exception-filters-context, request-context-host, rpc-context-creator, rpc-proxy | create, getGlobalMetadata, create static + getters, getMetadata, reflectCallbackParamtypes, createGuardsFn, exchangeKeysForValues, createPipesFn, getParamValue, getHandlerObservableNotifier, handleError, transformToObservable, attachHandlerObservableNotifier, notifyIfObservable |
+| `ctx-host/` | base-rpc + kafka/mqtt/nats/redis/rmq/tcp context | getArgs, getArgByIndex, toàn bộ getter transport, getMetadata |
+| `decorators/` | client, ctx, event-pattern, message-pattern, payload | Client, Ctx, EventPattern, MessagePattern, GrpcMethod, GrpcStreamMethod, GrpcStreamCall, createGrpcMethodMetadata, Payload |
+| `deserializers/` | identity, incoming-request, incoming-response, kafka-request, kafka-response, nats-request-json, nats-response-json | deserialize, isExternal, mapToSchema |
+| `errors/` | invalid-tcp-data-reception | constructor (6 điều kiện con) |
+| `exceptions/` | base-rpc-exception-filter, grpc-exception, grpc-exception-filter, kafka-retriable-exception, rpc-exception, rpc-exceptions-handler | catch, handleUnknownError, isError, getCode, getError, serializeRpcException, getErrorCode, initMessage, handle, setCustomFilters, invokeCustomFilters, 16 subclass Grpc* |
+| `factories/` | rpc-params-factory | exchangeKeyForValue + getPayloadProperty |
+| `helpers/` | grpc-helpers, json-socket, kafka-logger, kafka-parser, kafka-reply-partition-assigner, tcp-socket | getGrpcPackageDefinition, constructor, handleSend/handleData/processBuffer/backpressure/timers, KafkaLogger, parse/decode/decodeAsString/getMessageSize, assign/protocol/decodeMember/decodePreviousAssignment, connect/on/once/end/sendMessage/emitMessage/handleDataError |
+| root | listener-metadata-explorer, listeners-controller, microservices-module, nest-microservice | explore/exploreMethodMetadata/scanForClientHooks; registerPatternHandlers/insertEntrypointDefinition/forkJoinHandlersIfAttached/settleHandlerResult/assignClientsToProperties/createRequestScopedHandler/getContextId/transformToObservable; register/setupListeners/setupClients/bindListeners/bindClients/close; constructor/createServer/registerModules/listen/close/init/dispose/resolveAsyncOptions |
+| `module/` | clients.module | register, registerAsync, createAsyncProviders/OptionsProvider/FactoryWrapper |
+| `record-builders/` | mqtt, nats, rmq | constructor, setData/setQoS/setRetain/setDup/setProperties/setHeaders/setOptions, build |
+| `serializers/` | identity, kafka-request, mqtt-record, nats-record, rmq-record | serialize, encode |
+| `utils/` | transform-pattern, packet-metadata, get-param-args-metadata, param | transformPatternToRoute, toPacketMetadata, hasPacketMetadata, getParamArgsMetadata, createRpcParamDecorator, createPipesRpcParamDecorator |
+
+#### Out-of-scope (không có logic rẽ nhánh)
+
+- Toàn bộ `index.ts` (re-export), `interfaces/**`, `external/**`, `module/interfaces/**` (type-only).
+- `constants.ts`, `tokens.ts`, `context/rpc-metadata-constants.ts` (chỉ hằng số).
+- `enums/*` (5 file), `events/*` (6 file): ánh xạ hằng.
+- 22 file `errors/*.ts` chỉ là subclass rỗng/không điều kiện (riêng `invalid-tcp-data-reception` có logic nên in-scope).
+
+#### Indirect dependency
+
+- `@nestjs/common/internal` (`isNil`, `isObject`, `isString`, `isFunction`, `isEmptyArray`, `loadPackage*`...),
+  `@nestjs/core/internal` (`ExecutionContextHost`, `BaseExceptionFilterContext`, `RuntimeException`, `MESSAGES`),
+  rxjs, iterare.
+- Các transport package: dùng instance thật ở trạng thái không kết nối hoặc fake object/EventEmitter;
+  chỉ stub collaborator, không stub logic đang kiểm thử.
+
+### Bước 3-4 - CFG / C3 và test path
+
+- Mỗi spec có comment đầu file liệt kê decision và điều kiện con theo quy ước `xck`, kèm ghi chú
+  path infeasible. Điều kiện phức được tách theo short-circuit; mỗi điều kiện nguyên tử được đánh giá
+  cả True và False, mỗi decision có cả hai kết quả.
+- Ví dụ đã tách:
+  - `transformPatternToRoute`: 6 decision/7 path (`1c1` string, `1c2` number; D2..D6 depth/keys/key-length/value-string).
+  - `KafkaParser.decode`: `Buffer.isBuffer && length > 0 && readUInt8(0) === 0` (10c1..10c3).
+  - `JsonSocket.processBuffer`: delimiter `-1`, buffer `> 32`, `isNaN || < 0`, `> maxBufferSize`, `===`, `>`, `isBackpressured`.
+  - `Server.send`: `data.isDisposed && queue.length > nextIndex`; catch `packet.isDisposed && !isFallbackQueued`.
+  - `RpcContextCreator.create`: `isResultWrapped = !isEmptyArray(interceptors) || preRequestHooks.length > 0`, `preRequestHooks.length === 0`.
+  - `KafkaRequestSerializer`: `isNil || !isObject || (!key && !value)`, `isObject(headers) && !Array.isArray`, `headerValues > MAX`.
+  - `IncomingResponseDeserializer.isExternal`: `!value || typeof !== 'object'`, `keys.length === 0`, `keys.some(...)`.
+  - `NatsContext.getMetadata`: `!isFunction(keys) || !isFunction(values)`, `values.length === 1 ? ... : ...`.
+  - `BaseRpcExceptionFilter.catch`: `res instanceof Error && res !== exception`; `GrpcExceptionFilter.getErrorCode`: `isNumber(code)` else `isNumber(status)`.
+  - `RpcException.initMessage`: string / object có message string / fallback tên constructor.
+  - `InvalidTcpDataReceptionException`: 6 điều kiện con, 7 path.
+- Path infeasible (đã ghi Note trong spec):
+  - `ClientProxyFactory.create`: fallback `clientOptions ?? { options: {} }` không chạm được vì
+    `isCustomClientOptions` dereference null trước đó (ném TypeError).
+  - `JsonSocket.processBuffer`: nhánh `contentLength === null` sau block đầu không thể xảy ra (luôn non-null).
+  - `Server.send`: lỗi publish của packet không-disposed sau khi fallback đã queue là không chạm được.
+  - `ClientMqtt`/`ClientRMQ`: nhánh fallback `loadPackageSync` sẽ mở socket thật nên không kích hoạt.
+  - `ServerKafka`: `!isString(replyTopic)` không đạt được qua parser thật; đã drive bằng parser stub.
+- Không có path bị BLOCKED.
+
+### Bước 5 - File test đã tạo (73 file)
+
+```text
+ai-generated-tests/packages/microservices/
+  client/{client-grpc,client-kafka,client-mqtt,client-nats,client-proxy-factory,client-proxy,client-redis,client-rmq,client-tcp}.spec.ts
+  container.spec.ts
+  context/{exception-filters-context,request-context-host,rpc-context-creator,rpc-proxy}.spec.ts
+  ctx-host/{base-rpc.context,kafka.context,mqtt.context,nats.context,redis.context,rmq.context,tcp.context}.spec.ts
+  decorators/{client,ctx,event-pattern,message-pattern,payload}.decorator.spec.ts
+  deserializers/{identity,incoming-request,incoming-response,kafka-request,kafka-response,nats-request-json,nats-response-json}.deserializer.spec.ts
+  errors/invalid-tcp-data-reception.exception.spec.ts
+  exceptions/{base-rpc-exception-filter,grpc-exception-filter,grpc-exception,kafka-retriable-exception,rpc-exception,rpc-exceptions-handler}.spec.ts
+  factories/rpc-params-factory.spec.ts
+  helpers/{grpc-helpers,json-socket,kafka-logger,kafka-parser,kafka-reply-partition-assigner,tcp-socket}.spec.ts
+  listener-metadata-explorer.spec.ts
+  listeners-controller.spec.ts
+  microservices-module.spec.ts
+  module/clients.module.spec.ts
+  nest-microservice.spec.ts
+  record-builders/{mqtt,nats,rmq}.record-builder.spec.ts
+  serializers/{identity,kafka-request,mqtt-record,nats-record,rmq-record}.serializer.spec.ts
+  server/{server,server-factory,server-tcp,server-redis,server-nats,server-mqtt,server-rmq,server-kafka,server-grpc}.spec.ts
+  utils/{get-param-args-metadata.util,packet-metadata.utils,param.utils,transform-pattern.utils}.spec.ts
+```
+
+### Bước 6 - Kết quả thực thi và coverage
+
+Lệnh chạy:
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/microservices --reporter=dot
+```
+
+Kết quả: **73 test files passed, 2171 tests passed, 0 failed, 0 lỗi**.
+
+Lệnh đo coverage (không sửa config):
+
+```bash
+npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/microservices \
+  --coverage --coverage.provider=v8 \
+  --coverage.include='packages/microservices/**/*.ts' \
+  --coverage.exclude='**/*.d.ts' --coverage.exclude='**/index.ts' \
+  --coverage.exclude='**/*.interface.ts' \
+  --coverage.exclude='packages/microservices/test/**' \
+  --coverage.exclude='packages/microservices/interfaces/**' \
+  --coverage.exclude='packages/microservices/external/**' \
+  --coverage.exclude='packages/microservices/module/interfaces/**' \
+  --coverage.reportsDirectory=ai-generated-tests/coverage-microservices \
+  --coverage.reporter=text --coverage.reporter=json-summary --reporter=dot
+```
+
+Số liệu đo được (v8):
+
+| Metric | Covered/Total | % |
+| --- | --- | --- |
+| Statements | 4007/4040 | **99.18%** |
+| Branches (C2 proxy) | 1925/1948 | **98.81%** |
+| Functions | 1052/1075 | **97.86%** |
+| Lines | 3938/3967 | **99.26%** |
+
+- **C3 (Condition Coverage) không được `@vitest/coverage-v8` đo trực tiếp**: tool chỉ báo
+  statement/branch/function/line. Branch coverage được dùng làm proxy C2; C3 được thiết kế thủ công
+  theo bảng decision/condition trong từng spec. Không quy đổi branch coverage thành C3 và không tuyên bố
+  con số C3 đo được.
+- 100% branch ở: toàn bộ `utils/`, `serializers/`, `deserializers/`, `record-builders/`, `ctx-host/`,
+  `decorators/`, `exceptions/`, `factories/`, `module/`, `container.ts`, `listener-metadata-explorer.ts`,
+  `listeners-controller.ts`, `microservices-module.ts`, `helpers/*` (trừ `json-socket` 98.71%),
+  `server-factory.ts`, `server-tcp.ts` (branch 100%), `client-nats.ts` (branch 100%),
+  `errors/invalid-tcp-data-reception`.
+- File còn thiếu nhánh (% branch): client-proxy-factory 91.66 (fallback infeasible),
+  client-kafka 96, client-redis 96.62, client-mqtt 96.84, client-tcp 97.72, client-grpc 98,
+  client-rmq 98.68, server-mqtt 98.41, server-redis 98.52, server-nats 98.55, json-socket 98.71,
+  server-grpc 98.94, server-rmq 98.95, nest-microservice 98.24, server.ts 98.36.
+- 23 hàm chưa phủ (2.14%) là callback/glue của transport, không phải decision logic:
+  callback event listener gắn trên fake client/socket nhưng fake không emit đúng sự kiện
+  (`client-grpc` x2, `client-kafka` x2 gồm getter `consumer`, `client-mqtt` x2, `client-nats` x2,
+  `client-rmq` x2, `client-tcp` x2 gồm `handleError` bị `vi.spyOn` thay thế,
+  `server-grpc` x1, `server-mqtt` x3, `server-nats` x1, `server-rmq` x5, `server-tcp` x1).
+  Các nhánh điều kiện của chúng đều đã được phủ qua đường gọi khác.
+
+Tổng hợp yêu cầu báo cáo:
+
+- Số hàm: **1052/1075 hàm được sinh test và thực thi**; **23 hàm bỏ qua** (lý do trên); **0 hàm bị chặn**.
+- Kết quả thực thi: **2171 pass, 0 fail, 0 lỗi**.
+- Độ phủ: **branch 98.81%**, statement 99.18%, function 97.86%, line 99.26%;
+  C3 không có tool đo trực tiếp (xem giới hạn ở trên).
+
+### Bước 7 - Lưu tiến độ và dừng
+
+- Trạng thái module `packages/microservices`: **HOÀN TẤT** (thay thế trạng thái BLOCKED của Module 14).
+- Chỉ tạo mới file dưới `ai-generated-tests/packages/microservices/` và thư mục coverage tạm
+  `ai-generated-tests/coverage-microservices/` (artifact của lần đo, đã xoá sau khi ghi số liệu).
+- Không sửa production code, file build/dependency, hay test có sẵn; không đọc/ghi file bí mật; không commit.
+- Không chuyển sang module khác. Dừng lại và chờ chỉ định module tiếp theo.
+
+## Module 16 - `packages/platform-ws`
+
+### Bước 1 - Khảo sát project
+
+- Test runner: `vitest` 5.1.0, config gốc `vitest.config.mts` (globals, alias `@nestjs/*`, setup `reflect-metadata`).
+- Test hiện có của module: `packages/platform-ws/test/**/*.spec.ts` (3 file).
+- Baseline trước khi sinh test:
+
+```bash
+node node_modules/vitest/vitest.mjs run packages/platform-ws --reporter=dot
+```
+
+Kết quả baseline: **3 test files, 34 tests passed**.
+
+- Chạy một file test AI sinh:
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/platform-ws/adapters/ws-adapter.spec.ts --reporter=dot
+```
+
+- Coverage (không sửa file build):
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/platform-ws --coverage --coverage.include="packages/platform-ws/{adapters/ws-adapter,utils/merge-map-bounded.util}.ts" --coverage.reporter=text
+```
+
+### Bước 2 - Phân loại hàm
+
+| File production | Hàm/phương thức | Loại | Trạng thái |
+| --- | --- | --- | --- |
+| `adapters/ws-adapter.ts` | `constructor` (D1-D3) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `create` (D1-D4) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `bindMessageHandlers` + `updatePaused` + `onMessage` (D1-D9) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `bindMessageHandler` (D1-D5) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `ensureSendBufferWithinLimit` (D1-D2) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `bindErrorHandler` | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `bindClientDisconnect` (D1) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `close` (D1) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `dispose` (D1) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `setMessageParser` | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `ensureHttpServerExists` + `upgradeListener` (D1-D3) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `addWsServerToRegistry` (`??` + `path` ghi đè) | In-scope | Tested |
+| `adapters/ws-adapter.ts` | `rejectNonUpgradeRequest`, `defaultMessageParser` (module-level) | In-scope | Tested (qua `ensureHttpServerExists`/`bindMessageHandler`) |
+| `utils/merge-map-bounded.util.ts` | `mergeMapBounded` + `drain` (D1-D5) | In-scope | Tested |
+| `index.ts`, `adapters/index.ts` | re-export only | Out-of-scope | Không có logic |
+| `AbstractWsAdapter`, `Logger`, `normalizePath`, `isNil`, `ws`, `http` | dependency | Indirect | Chỉ dùng làm test double/giữ nguyên |
+
+### Bước 3 - CFG và C3
+
+Quy ước `xc1, xc2...` = điều kiện con của nút quyết định thứ `x`, short-circuit.
+
+`constructor`: 1 `options?.messageParser`; 2 `maxConcurrentMessages ?? DEFAULT`; 3 `maxSendBufferSize ?? DEFAULT`.
+
+`create`: 1 `wsOptions?.namespace`; 2c1 `port === 0` && 2c2 `this.httpServer`; 3 `server`; 4c1 `path` && 4c2 `port !== 0`.
+
+`bindMessageHandlers`:
+- 1c1 `isBacklogged` || 1c2 `pendingReplies > 0` && 1c3 `bufferedAmount > 1MB`;
+- 2 `shouldPause === isPaused`; 3 `isPaused` (pause/resume);
+- 4 `readyState === OPEN` (message filter); 5 `ensureSendBufferWithinLimit` (filter);
+- 6 `!isNil(result)`; 7 `readyState !== OPEN` (onMessage guard);
+- 8 `JSON.stringify` throws; 9 `ensureSendBufferWithinLimit` (sau khi send).
+
+`bindMessageHandler`: 1 parser throws; 2 `messageParser !== defaultMessageParser`; 3 `!message`; 4 `!messageHandler`; 5 callback/transform throws.
+
+`ensureSendBufferWithinLimit`: 1c1 `!maxSendBufferSize` || 1c2 `!(bufferedAmount > max)`; 2 `readyState === OPEN`.
+
+`ensureHttpServerExists`: 1 `has(port)`; 2 `pathname === wsServer.path` (trong `for..of`); 3 `!isRequestDelegated`.
+`close`: 1 `server.clients`. `dispose`: 1 `port !== 0`.
+
+`mergeMapBounded`: 1 `isDraining`; 2c1 `head` && 2c2 `active < concurrent` && 2c3 `!subscriber.closed`; 3c1 `onBacklog` && 3c2 `isBacklogged !== !!head`; 4c1 `isSourceComplete` && 4c2 `!head` && 4c3 `active === 0`; 5 `head ? ... : ...`.
+
+Số đường độc lập (số nút quyết định + 1): WsAdapter toàn class 42 nút sau khi tách; `mergeMapBounded` 5 nút → 6 đường. Các test được gộp để mỗi điều kiện con nhận cả T và F, không sinh test trùng.
+
+### Bước 4 - Test path và Note
+
+- Mỗi nhánh T/F của từng điều kiện con đều có test tương ứng; nhãn `D...(T/F)` ghi ngay trong tên test.
+- Flow control `updatePaused` dùng chuỗi trạng thái: bắt đầu → backlog (pause) → inner complete (resume) → send callback (pendingReplies = 0) → buffer vượt high-water (pause) → flush (resume).
+- Note (không phải infeasible nhưng không quan sát được bằng nhánh):
+  - `dispose`: `this.httpServersRegistry.get(port)?.off(...)` — nhánh `undefined` không xảy ra vì upgrade listener chỉ được đăng ký cùng lúc với server trong `ensureHttpServerExists`.
+  - `ensureHttpServerExists` → `httpServer?.listen(...)`: nhánh có server (port > 0, path) không tạo socket thật trong test; test dùng server đã đăng ký trước để đi hết điều kiện `path && port !== 0`, còn optional-call được phủ ở nhánh bỏ qua.
+  - `wsServersRegistry.get(port)!` có thể `undefined` khi port chưa có ws server → `for..of` ném và rơi vào `catch`; đã phủ nhánh `[]` (vòng lặp 0 vòng) và `catch` (URL lỗi), nên không sinh thêm test trùng.
+- Không có path bị đánh dấu infeasible trong phạm vi quyết định của module.
+
+### Bước 5 - File test
+
+- `ai-generated-tests/packages/platform-ws/adapters/ws-adapter.spec.ts` (44 test)
+- `ai-generated-tests/packages/platform-ws/utils/merge-map-bounded.util.spec.ts` (17 test)
+
+Không ghi đè/xóa test có sẵn; chỉ đọc `packages/platform-ws/test/**` làm baseline.
+
+### Bước 6 - Kết quả thực thi và coverage
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/platform-ws --reporter=dot
+```
+
+- **2 test files, 61 tests passed, 0 failed** (sửa 3 lỗi test trong 2 lần chạy: mô hình trạng thái flow-control, hàng đợi backlog, stub `close` không gọi callback).
+
+| File | Statements | Branch (C2 proxy) | Functions | Lines |
+| --- | --- | --- | --- | --- |
+| `adapters/ws-adapter.ts` | **100%** | **100%** | **100%** | **100%** |
+| `utils/merge-map-bounded.util.ts` | **100%** | **100%** | **100%** | **100%** |
+
+- **C3 không được `@vitest/coverage-v8` đo trực tiếp**: báo cáo chỉ có statement/branch/function/line.
+  Bảng decision/condition trong spec là ma trận C3 thủ công; branch 100% là proxy C2, không tuyên bố
+  con số C3 do tool đo.
+- `.d.ts` không được tính (file khai báo kiểu, không thực thi); `index.ts` chỉ re-export nên out-of-scope.
+
+### Bước 7 - Lưu tiến độ và dừng
+
+- Trạng thái module `packages/platform-ws`: **HOÀN TẤT**.
+- Chỉ tạo mới 2 file dưới `ai-generated-tests/packages/platform-ws/`; không sửa production code,
+  file build/dependency hay test có sẵn; không commit.
+- Dừng lại, chờ chỉ định module tiếp theo.
