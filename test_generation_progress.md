@@ -1834,3 +1834,209 @@ Kết quả: **147 test files, 2610 tests passed, 0 failed**.
 - Coverage: statements/lines 99.82%, functions 100%, branches 98.32% (5 nhánh infeasible/không ghi nhận đã nêu).
 - Không sửa production code, file build/dependency hay test có sẵn.
 - Đang dừng, chờ chỉ định module tiếp theo. Khi tiếp tục, đọc file này để tránh sinh lại test đã có.
+
+## Module 9 - packages/platform-node
+
+### Bước 1 - Phạm vi
+- Module: `packages/platform-node` (`@nestjs/platform-node`).
+- Test AI: `ai-generated-tests/packages/platform-node/**`.
+- Không sửa production/test gốc; baseline gốc vẫn `16 files, 818 tests passed`.
+
+### Bước 2 - File test đã sinh (17 file, 430 tests)
+- `ai-generated-tests/packages/platform-node/adapters/utils/get-media-type-version.util.spec.ts`
+- `ai-generated-tests/packages/platform-node/adapters/utils/hostname.util.spec.ts`
+- `ai-generated-tests/packages/platform-node/adapters/configured-request.spec.ts`
+- `ai-generated-tests/packages/platform-node/adapters/node-request.spec.ts`
+- `ai-generated-tests/packages/platform-node/adapters/node-adapter.spec.ts`
+- `ai-generated-tests/packages/platform-node/body-parser/body-parser.spec.ts`
+- `ai-generated-tests/packages/platform-node/multer/multer.module.spec.ts`
+- `ai-generated-tests/packages/platform-node/multer/multer/multer.utils.spec.ts`
+- `ai-generated-tests/packages/platform-node/multer/interceptors/any-files.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-node/multer/interceptors/file-fields.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-node/multer/interceptors/file.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-node/multer/interceptors/files.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-node/multer/interceptors/no-files.interceptor.spec.ts`
+- `ai-generated-tests/packages/platform-node/router/utils.spec.ts`
+- `ai-generated-tests/packages/platform-node/router/route-table.spec.ts`
+- `ai-generated-tests/packages/platform-node/router/node-router.spec.ts`
+- `ai-generated-tests/packages/platform-node/views/view-renderer.spec.ts`
+
+### Bước 3 - Kỹ thuật
+- CFG/C3 ghi chú đầu mỗi nhóm test; dùng `it.each` cho biến thể interceptor, versioning, Accept/Vary, limit, charset, status không body.
+- Mock `NodeResponse`/`NodeRequest` bằng `Object.create(prototype)` và stub `writeHead/end/setHeader/getHeader`; dùng `Writable` thật cho operator `finished(res)` của `removeFilesOnPipeRejection`.
+- `node-router.spec.ts` dùng request/response thật ở mức prototype để chạy `handle()`/`dispatch()`.
+
+### Bước 4 - Coverage
+- Trong lúc đo coverage riêng cho module, cấu hình được tạm điều chỉnh để include `packages/platform-node/**` và exclude `interfaces`, `multer/interfaces`, `test`; sau đó đã khôi phục cấu hình ban đầu theo yêu cầu. Thay đổi cấu hình không nằm trong commit này.
+
+### Bước 5 - Kết quả
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/platform-node --coverage --reporter=dot
+```
+- **17 test files, 430 tests passed, 0 failed.**
+- Toàn bộ AI suite: **143 files, 2769 tests passed.**
+- Baseline gốc: **16 files, 818 tests passed.**
+
+Coverage module (`@vitest/coverage-v8`):
+- Statements: **77.6%**
+- Branches: **75.62%**
+- Functions: **77.21%**
+- Lines: **77.46%**
+- Đã đạt 100%: `configured-request.ts`, `get-media-type-version.util.ts`, `hostname.util.ts`, toàn bộ `multer` + 5 interceptor + `files.constants.ts`, `multer.constants.ts`.
+- Chưa phủ hết: `node-adapter.ts` (36.33% statements: `listen`, `inject`, `initHttpServer`, `finalHandler`, streaming/security hook), `node-request.ts` (75.74%: nhánh `sendFile` thành công), `body-parser.ts` (81.85%: nén gzip/br thành công), `route-table.ts` (84.89%), `node-router.ts` (86.52%).
+
+### Bước 6 - Trạng thái
+- Module `packages/platform-node`: đã sinh test cho toàn bộ họ hàm/util/module/interceptor in-scope; các nhánh còn thiếu thuộc tích hợp server/inject/stream và nén, chưa đạt 100%.
+- Không sửa production code; test được commit chung với module `packages/testing`.
+- Đang dừng, chờ module tiếp theo.
+
+## Module 10 - `packages/testing`
+
+### Bước 1 - Khảo sát project
+
+- Module: `packages/testing` (`@nestjs/testing` 12.4.2), TypeScript ESM.
+- Test runner: Vitest 5.1.0 (root `vitest.config.mts`, globals, alias `@nestjs/*`, setup `reflect-metadata`).
+- Test có sẵn của module: `packages/testing/test/**/*.spec.ts` (7 file, 110 test).
+- Baseline chạy trước khi sinh test:
+
+```bash
+node node_modules/vitest/vitest.mjs run packages/testing --reporter=dot
+```
+
+Kết quả baseline: **7 test files, 110 tests passed, 0 failed**.
+
+- Trong lúc đo coverage riêng cho module, cấu hình được tạm điều chỉnh để include `packages/testing/**/*.{ts,js}` và exclude test/interfaces; sau đó đã khôi phục cấu hình ban đầu theo yêu cầu. Thay đổi cấu hình không nằm trong commit này.
+- Không chạy test suite có sẵn; chỉ chạy test AI sinh theo quy định lưu trữ.
+
+### Bước 2 - Phân loại hàm
+
+#### In-scope (7 file runtime, 74 hàm)
+
+| File production | Thành phần runtime | Trạng thái |
+| --- | --- | --- |
+| `test.ts` | `Test.createTestingModule` | Tested |
+| `testing-module.ts` | `TestingModule.constructor`, `preloadLazyPackages`, `isHttpServer`, `createNestApplication` (2 overload), `createNestMicroservice`, `createHttpAdapter`, `applyLogger`, `createAdapterProxy` | Tested |
+| `testing-module.builder.ts` | `TestingModuleBuilder.constructor`, `setLogger`, `overridePipe`, `useMocker`, `overrideFilter`, `overrideGuard`, `overrideInterceptor`, `overrideProvider`, `overrideModule`, `compile`, `override`, `createOverrideByBuilder`, `applyOverloadsMap`, `getModuleOverloads`, `getRootModule`, `createInstancesOfDependencies`, `createModule`, `applyLogger` | Tested |
+| `testing-injector.ts` | `TestingInjector.setMocker`, `setContainer`, `lookupSkippedProviderDependencies`, `resolveComponentWrapper`, `resolveComponentHost`, `mockWrapper` | Tested |
+| `testing-instance-loader.ts` | `TestingInstanceLoader.createInstancesOfDependencies` | Tested |
+| `services/capturing-logger.service.ts` | `CapturingLogger` constructor, `entries`, 6 level methods, `filter`, `find`, `assertLogged`, `assertNotLogged`, `clear`, `capture`; helpers `toPredicate`, `describeMatcher`, `formatEntries` | Tested |
+| `services/testing-logger.service.ts` | `TestingLogger.constructor`, `log`, `warn`, `debug`, `verbose`, `error` | Tested |
+
+#### Out-of-scope
+
+- `index.ts`: chỉ re-export.
+- `interfaces/*.ts` + `interfaces/index.ts`: type/interface-only, bị xóa khi transpile.
+- `test/**`: test gốc của người dùng, chỉ đọc tham khảo, không sửa/copy.
+
+#### Indirect dependency
+
+- `NestContainer`, `ApplicationConfig`, `GraphInspector`, `NoopGraphInspector`,
+  `InstanceWrapper`, `Injector`, `InstanceLoader`, `DependenciesScanner`, `UuidFactory`:
+  dùng thật hoặc spy prototype để cô lập.
+- `ExpressAdapter` / `NestApplication` / `NestMicroservice`: dùng thật; riêng
+  `NestMicroservice` được thay bằng class giả qua `tryLoadPackage` để tránh khởi tạo transport.
+- `Logger`, `ConsoleLogger`, `process.stdout/stderr`: dùng thật, spy khi cần kiểm tra hành vi in.
+
+### Bước 3-4 - CFG / C3 và test path
+
+- **`Test.createTestingModule`**: 0 decision node, 1 path; tham số hoá metadata/options.
+- **`TestingModule`**:
+  - `preloadLazyPackages`: 2 lời gọi nối tiếp, 0 decision node.
+  - `isHttpServer`: `serverOrOptions && serverOrOptions.patch` (short-circuit) - phủ
+    undefined, `{}`, object không `patch`, adapter có `patch`.
+  - `createNestApplication`: ternary `isHttpServer(...)` T/F; `applyLogger` với
+    `!options || isUndefined(options.logger)` phủ cả 4 tổ hợp; nhánh có/không logger.
+  - `createNestMicroservice`: 0 decision node, gọi `loadPackageCached` + `applyLogger`.
+  - `createHttpAdapter`: 0 decision node; phủ có/không `httpServer`.
+  - `createAdapterProxy` (`get` trap):
+    - `!(prop in receiver) && prop in adapter` (short-circuit): property của adapter,
+      property của application, property không tồn tại.
+    - `!isFunction(value)`: non-function trả trực tiếp; function được gọi.
+    - `result === adapter`: chainable trả proxy; non-chainable trả kết quả.
+- **`TestingModuleBuilder`**:
+  - Mỗi `overridePipe/Filter/Guard/Interceptor/Provider`: `isProvider` T/F, cả 3 nhánh
+    `useValue`/`useFactory`/`useClass`.
+  - `overrideModule.useModule`: lưu map và trả builder.
+  - `compile`: `options?.snapshot` T/F (NoopGraphInspector vs GraphInspector,
+    UuidFactory Random/Deterministic), `options?.preview` T/F, `options?.preview ?? false`,
+    `options?.snapshot ?? false`, `this.mocker` có/không, `testingLogger || new TestingLogger`.
+  - `applyOverloadsMap`: map rỗng và map có provider + injectable (thứ tự provider trước).
+  - `getModuleOverloads`: rỗng và có override.
+  - `getRootModule`: lấy module đầu tiên.
+- **`TestingInjector`**:
+  - `lookupSkippedProviderDependencies`: `this.mocker` T/F; parent resolve/reject.
+  - `resolveComponentWrapper`: super success; super reject với `mocker` undefined;
+    `mocker` trả truthy/falsy; cache theo token; token khác nhau; thiếu internal core module.
+  - `resolveComponentHost`: super success/reject; `mocker` T/F; dùng `instanceWrapper.name`.
+  - `mockWrapper`: `!this.mocker`, cache hit/miss, `!mockedInstance`,
+    `!internalCoreModule`; đăng ký `addCustomProvider` + `addExportedProviderOrModule`.
+- **`TestingInstanceLoader.createInstancesOfDependencies`**:
+  - `modules` mặc định (gọi `container.getModules`) / truyền tường minh.
+  - `mocker &&` T/F; luôn `injector.setContainer`; chờ parent loader.
+- **`CapturingLogger`**:
+  - `isLevelEnabled(level)` T/F; nhánh error/fatal vs level thường; lazy message;
+    `extractJsonError` (Error là message / sau message / không có);
+    context/params/error/stack có/không; `shouldPrint` T/F; `isError` T/F.
+  - `filter`: matcher function; từng tiêu chí level/context/message/params
+    undefined/defined, string/regex, entry không có context/params, message non-string,
+    deep-equal params.
+  - `assertLogged`/`assertNotLogged`: tìm thấy/không; entries rỗng; >50 entries
+    (bỏ 10 dòng đầu); format string/non-string/context/params.
+  - `clear`, `entries` snapshot, `Logger.overrideLogger` cho instance/static.
+- **`TestingLogger`**: 4 method im lặng; `error` chuyển tiếp message + optional params.
+
+Số path infeasible: **0**. Toàn bộ nhánh khả thi của module đã được kích hoạt.
+
+### Bước 5 - File test đã tạo
+
+- `ai-generated-tests/packages/testing/test.spec.ts`
+- `ai-generated-tests/packages/testing/testing-module.spec.ts`
+- `ai-generated-tests/packages/testing/testing-module.builder.spec.ts`
+- `ai-generated-tests/packages/testing/testing-injector.spec.ts`
+- `ai-generated-tests/packages/testing/testing-instance-loader.spec.ts`
+- `ai-generated-tests/packages/testing/services/capturing-logger.service.spec.ts`
+- `ai-generated-tests/packages/testing/services/testing-logger.service.spec.ts`
+
+- Sử dụng Parameterized Test (`describe.each`, `it.each`) cho override methods, level
+  methods, logger options, `isHttpServer`, `applyLogger`, stack/error variants.
+
+### Bước 6 - Kết quả thực thi và coverage
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/testing --reporter=dot
+```
+
+Kết quả: **7 test files, 127 tests passed, 0 failed, 0 lỗi biên dịch/import**.
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts ai-generated-tests/packages/testing --coverage --reporter=dot
+```
+
+Kết quả coverage (`@vitest/coverage-v8`):
+
+- Statements: **100%** (190/190)
+- Branches: **100%** (109/109)
+- Functions: **100%** (74/74)
+- Lines: **100%** (186/186)
+- **7/7 file fully covered**, không có branch infeasible.
+
+Chạy lại toàn bộ AI suite:
+
+```bash
+node node_modules/vitest/vitest.mjs run --config ai-generated-tests/vitest.config.mts --reporter=dot
+```
+
+Kết quả: **150 test files, 2896 tests passed, 0 failed**.
+
+Giới hạn công cụ: `@vitest/coverage-v8` báo branch coverage, không báo C3 theo nghĩa
+atomic-condition. C3 được thiết kế thủ công bằng CFG (tách từng điều kiện con,
+tôn trọng short-circuit) và input cho cả T/F; toàn bộ điều kiện khả thi đã được phủ.
+Các nhánh private được kiểm thử trực tiếp bằng white-box (gọi method private qua
+truy cập bracket) và spy prototype của lớp cha.
+
+### Bước 7 - Trạng thái
+
+- Module `packages/testing`: **hoàn tất**.
+- Số hàm in-scope: **74/74 đã sinh test**, **0 bỏ qua**, **0 BLOCKED**.
+- Không sửa production code, file build/dependency hay test gốc; test được commit chung với module `platform-node`.
+- Đang dừng, chờ chỉ định module tiếp theo.
