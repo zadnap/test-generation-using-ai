@@ -1,0 +1,765 @@
+import { EventEmitter } from 'events';
+import { of } from 'rxjs';
+import { NO_MESSAGE_HANDLER } from '../../constants.js';
+import { BaseRpcContext } from '../../ctx-host/base-rpc.context.js';
+import { RedisContext } from '../../ctx-host/index.js';
+import { InvalidPacketIdException } from '../../errors/invalid-packet-id.exception.js';
+import { ServerRedis } from '../../server/server-redis.js';
+import { objectToMap } from './utils/object-to-map.js';
+
+describe('ServerRedis', () => {
+  let server: ServerRedis;
+  let untypedServer: any;
+
+  beforeEach(() => {
+    server = new ServerRedis({});
+    untypedServer = server as any;
+  });
+  describe('listen', () => {
+    let onSpy: ReturnType<typeof vi.fn>;
+    let connectSpy: ReturnType<typeof vi.fn>;
+    let client: any;
+    let callbackSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      onSpy = vi.fn();
+      connectSpy = vi.fn();
+
+      client = {
+        on: onSpy,
+        connect: connectSpy,
+      };
+      vi.spyOn(server, 'createRedisClient').mockImplementation(() =>
+        Promise.resolve(client),
+      );
+
+      callbackSpy = vi.fn();
+    });
+    it('should bind "error" event to handler', async () => {
+      await server.listen(callbackSpy);
+      expect(onSpy.mock.calls[0][0]).toBe('error');
+    });
+    it('should call "RedisClient#connect()"', async () => {
+      await server.listen(callbackSpy);
+      expect(connectSpy).toHaveBeenCalled();
+    });
+    it('should re-arm the connection retries after "close"', async () => {
+      untypedServer.options = { retryAttempts: 3, retryDelay: 5 };
+
+      await server.close();
+      await server.listen(callbackSpy);
+
+      // "close" turned the retries off; the next "listen" must turn them back on
+      expect(server.createRetryStrategy(1)).toEqual(5);
+    });
+    it('should report a reconnecting client again after "close"', async () => {
+      const subClient = new EventEmitter();
+      const pubClient = new EventEmitter();
+      vi.spyOn(server, 'createRedisClient')
+        .mockResolvedValueOnce(subClient as any)
+        .mockResolvedValueOnce(pubClient as any);
+
+      await server.close();
+
+      const statuses: string[] = [];
+      server.status.subscribe(status => statuses.push(status as string));
+
+      await server.listen(callbackSpy);
+      subClient.emit('reconnecting');
+
+      expect(statuses).toContain('reconnecting');
+    });
+    it('should ignore the "end" of a client that a newer "listen" replaced', async () => {
+      const fakeClient = () => {
+        const client: any = new EventEmitter();
+        client.connect = async () => {};
+        client.quit = async () => {};
+        client.disconnect = () => {};
+        return client;
+      };
+      const subClient = fakeClient();
+      const pubClient = fakeClient();
+      const nextSubClient = fakeClient();
+      const nextPubClient = fakeClient();
+      vi.spyOn(server, 'createRedisClient')
+        .mockResolvedValueOnce(subClient)
+        .mockResolvedValueOnce(pubClient)
+        .mockResolvedValueOnce(nextSubClient)
+        .mockResolvedValueOnce(nextPubClient);
+
+      await server.listen(callbackSpy);
+      await server.close();
+
+      const statuses: string[] = [];
+      server.status.subscribe(status => statuses.push(status as string));
+
+      await server.listen(callbackSpy);
+      // "quit" resolves before ioredis emits "end", so the replaced client can
+      // report its own "end" while the replacement clients are connected
+      subClient.emit('end');
+
+      expect(statuses).not.toContain('disconnected');
+    });
+    describe('when "start" throws an exception', () => {
+      it('should call callback with a thrown error as an argument', async () => {
+        const error = new Error('random error');
+
+        const callbackSpy = vi.fn();
+        vi.spyOn(server, 'start').mockImplementation(() => {
+          throw error;
+        });
+        await server.listen(callbackSpy);
+        expect(callbackSpy).toHaveBeenCalledWith(error);
+      });
+    });
+  });
+  describe('event listeners registered before "listen"', () => {
+    it('should forward the matching client type ("sub"/"pub") to the listener', async () => {
+      const subClient = new EventEmitter();
+      const pubClient = new EventEmitter();
+      vi.spyOn(server, 'createRedisClient')
+        .mockResolvedValueOnce(subClient as any)
+        .mockResolvedValueOnce(pubClient as any);
+      vi.spyOn(server, 'start').mockImplementation((cb?: () => void) => cb?.());
+
+      const readySpy = vi.fn();
+      server.on('ready', readySpy);
+
+      await server.listen(() => {});
+
+      subClient.emit('ready');
+      pubClient.emit('ready');
+
+      expect(readySpy.mock.calls[0][0]).toBe('sub');
+      expect(readySpy.mock.calls[1][0]).toBe('pub');
+    });
+  });
+  describe('close', () => {
+    const pub = { quit: vi.fn() };
+    const sub = { quit: vi.fn() };
+    beforeEach(() => {
+      untypedServer.pubClient = pub;
+      untypedServer.subClient = sub;
+    });
+    it('should close pub & sub server', async () => {
+      await server.close();
+
+      expect(pub.quit).toHaveBeenCalledOnce();
+      expect(sub.quit).toHaveBeenCalledOnce();
+    });
+    it('should disconnect a client whose "quit" fails and still close the other one', async () => {
+      const failingPub = {
+        quit: vi
+          .fn()
+          .mockRejectedValue(
+            new Error(
+              "Stream isn't writeable and enableOfflineQueue options is false",
+            ),
+          ),
+        disconnect: vi.fn(),
+      };
+      untypedServer.pubClient = failingPub;
+
+      await expect(server.close()).resolves.toBeUndefined();
+
+      expect(failingPub.disconnect).toHaveBeenCalledOnce();
+      expect(sub.quit).toHaveBeenCalledOnce();
+    });
+  });
+  describe('start', () => {
+    it('should pass a rejected subscription to the callback', async () => {
+      const error = new Error('NOPERM No permissions to access a channel');
+      untypedServer.messageHandlers = objectToMap({ test: vi.fn() });
+      untypedServer.subClient = {
+        connect: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn(),
+        subscribe: vi.fn().mockRejectedValue(error),
+      };
+      untypedServer.pubClient = {
+        connect: vi.fn().mockResolvedValue(undefined),
+      };
+      const callback = vi.fn();
+
+      server.start(callback);
+      await vi.waitFor(() => expect(callback).toHaveBeenCalled());
+
+      expect(callback).toHaveBeenCalledExactlyOnceWith(error);
+    });
+    it('should call back once every subscription is acknowledged', async () => {
+      let acknowledge: () => void;
+      untypedServer.messageHandlers = objectToMap({ test: vi.fn() });
+      untypedServer.subClient = {
+        connect: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn(),
+        subscribe: vi.fn(
+          () => new Promise<void>(resolve => (acknowledge = resolve)),
+        ),
+      };
+      untypedServer.pubClient = {
+        connect: vi.fn().mockResolvedValue(undefined),
+      };
+      const callback = vi.fn();
+
+      server.start(callback);
+      await vi.waitFor(() =>
+        expect(untypedServer.subClient.subscribe).toHaveBeenCalled(),
+      );
+      expect(callback).not.toHaveBeenCalled();
+
+      acknowledge!();
+      await vi.waitFor(() => expect(callback).toHaveBeenCalledWith());
+    });
+  });
+  describe('handleConnection', () => {
+    let onSpy: ReturnType<typeof vi.fn>,
+      subscribeSpy: ReturnType<typeof vi.fn>,
+      sub,
+      psub;
+
+    beforeEach(() => {
+      onSpy = vi.fn();
+      subscribeSpy = vi.fn();
+      sub = {
+        on: onSpy,
+        subscribe: subscribeSpy,
+      };
+      psub = {
+        on: onSpy,
+        psubscribe: subscribeSpy,
+      };
+    });
+    it('should bind "message" event to handler if wildcards are disabled', () => {
+      server.bindEvents(sub, null);
+      expect(onSpy.mock.calls[0][0]).toBe('message');
+    });
+    it('should route "handleMessage" rejections to "handleError" instead of leaving them unhandled', async () => {
+      const error = new Error('unexpected');
+      vi.spyOn(server, 'handleMessage').mockRejectedValue(error);
+      const handleErrorSpy = vi
+        .spyOn(untypedServer, 'handleError')
+        .mockImplementation(() => undefined);
+
+      server.bindEvents(sub, null);
+      const [, onMessage] = onSpy.mock.calls.find(
+        ([event]) => event === 'message',
+      )!;
+      await onMessage('channel', 'buffer');
+
+      expect(handleErrorSpy).toHaveBeenCalledWith(error);
+    });
+    it('should bind "pmessage" event to handler if wildcards are enabled', () => {
+      untypedServer.options = {};
+      untypedServer.options.wildcards = true;
+
+      server.bindEvents(psub, null);
+      expect(onSpy.mock.calls[0][0]).toBe('pmessage');
+    });
+
+    it('should "subscribe" to each pattern if wildcards are disabled', () => {
+      const pattern = 'test';
+      const handler = vi.fn();
+      untypedServer.messageHandlers = objectToMap({
+        [pattern]: handler,
+      });
+      server.bindEvents(sub, null);
+      expect(subscribeSpy).toHaveBeenCalledWith(pattern);
+    });
+
+    it('should "psubscribe" to each pattern if wildcards are enabled', () => {
+      untypedServer.options = {};
+      untypedServer.options.wildcards = true;
+
+      const pattern = 'test';
+      const handler = vi.fn();
+      untypedServer.messageHandlers = objectToMap({
+        [pattern]: handler,
+      });
+      server.bindEvents(psub, null);
+      expect(subscribeSpy).toHaveBeenCalledWith(pattern);
+    });
+  });
+  describe('getMessageHandler', () => {
+    it(`should return function`, () => {
+      expect(typeof server.getMessageHandler(null)).toEqual('function');
+    });
+  });
+  describe('handleMessage', () => {
+    let getPublisherSpy: ReturnType<typeof vi.fn>;
+
+    const channel = 'test';
+    const data = 'test';
+    const id = '3';
+
+    beforeEach(() => {
+      getPublisherSpy = vi.fn();
+      vi.spyOn(server, 'getPublisher').mockImplementation(
+        () => getPublisherSpy,
+      );
+    });
+    it('should call "handleEvent" if identifier is not present', async () => {
+      const handleEventSpy = vi.spyOn(server, 'handleEvent');
+      vi.spyOn(server, 'parseMessage').mockImplementation(
+        () => ({ data }) as any,
+      );
+
+      await server.handleMessage(channel, JSON.stringify({}), null, channel);
+      expect(handleEventSpy).toHaveBeenCalled();
+    });
+    it(`should publish NO_MESSAGE_HANDLER if pattern not exists in messageHandlers object`, async () => {
+      vi.spyOn(server, 'parseMessage').mockImplementation(
+        () => ({ id, data }) as any,
+      );
+      await server.handleMessage(
+        channel,
+        JSON.stringify({ id }),
+        null,
+        channel,
+      );
+      expect(getPublisherSpy).toHaveBeenCalledWith({
+        id,
+        status: 'error',
+        err: NO_MESSAGE_HANDLER,
+      });
+    });
+    it(`should call handler with expected arguments`, async () => {
+      const handler = vi.fn();
+      untypedServer.messageHandlers = objectToMap({
+        [channel]: handler,
+      });
+      vi.spyOn(server, 'parseMessage').mockImplementation(
+        () => ({ id, data }) as any,
+      );
+
+      await server.handleMessage(channel, '', null, channel);
+      expect(handler).toHaveBeenCalledWith(data, expect.any(RedisContext));
+    });
+    it('should still reply with an event handler, but warn once that this is deprecated', async () => {
+      const handler = Object.assign(async () => 'stored', {
+        isEventHandler: true,
+      });
+      untypedServer.messageHandlers = objectToMap({ [channel]: handler });
+      const warnSpy = vi
+        .spyOn(untypedServer.logger, 'warn')
+        .mockImplementation(() => {});
+      const request = JSON.stringify({ id, pattern: channel, data });
+
+      await server.handleMessage(channel, request, null, channel);
+      await server.handleMessage(channel, request, null, channel);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(getPublisherSpy).toHaveBeenCalledTimes(2);
+      expect(getPublisherSpy).toHaveBeenCalledWith({
+        response: 'stored',
+        isDisposed: true,
+      });
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy.mock.calls[0][0]).toMatch(
+        /^DEPRECATED! .* Pattern: test$/,
+      );
+    });
+    it('should drop a request whose id is neither a number nor a short string', async () => {
+      // Every reply carries the id, so it would be serialized for each of them
+      const handler = vi.fn();
+      untypedServer.messageHandlers = objectToMap({
+        [channel]: handler,
+      });
+
+      const error = await server
+        .handleMessage(
+          channel,
+          JSON.stringify({ id: [[['nested']]], pattern: channel, data }),
+          null,
+          channel,
+        )
+        .catch(err => err);
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(getPublisherSpy).not.toHaveBeenCalled();
+      expect(error).toBeInstanceOf(InvalidPacketIdException);
+    });
+    it('should expose the packet metadata on the context', async () => {
+      const handler = vi.fn();
+      const metadata = { traceId: 'trace-1' };
+      untypedServer.messageHandlers = objectToMap({
+        [channel]: handler,
+      });
+      vi.spyOn(server, 'parseMessage').mockImplementation(
+        () => ({ id, data, metadata }) as any,
+      );
+
+      await server.handleMessage(channel, '', null, channel);
+
+      const context: RedisContext = handler.mock.calls[0][1];
+      expect(context.getMetadata()).toEqual(metadata);
+    });
+    it('should publish the reply to the channel the request came from when wildcards are enabled', async () => {
+      // ioredis emits "pmessage" with (pattern, channel, message). With
+      // wildcards the handler is registered on the pattern ("users.*"), but
+      // the client waits for the reply on the concrete channel it published
+      // to ("users.created.reply"), so the reply must target that channel.
+      untypedServer.options.wildcards = true;
+      const handler = vi.fn();
+      untypedServer.messageHandlers = objectToMap({
+        'users.*': handler,
+      });
+      vi.spyOn(server, 'parseMessage').mockImplementation(
+        () => ({ id, data }) as any,
+      );
+
+      await server.handleMessage('users.*', '', null, 'users.created');
+
+      expect(handler).toHaveBeenCalledWith(data, expect.any(RedisContext));
+      expect(server.getPublisher).toHaveBeenCalledWith(
+        null,
+        'users.created',
+        id,
+        expect.any(RedisContext),
+      );
+    });
+    describe('when wildcards are enabled', () => {
+      let handler: ReturnType<typeof vi.fn>;
+
+      beforeEach(() => {
+        untypedServer.options.wildcards = true;
+        handler = vi.fn();
+        untypedServer.messageHandlers = objectToMap({
+          'users.*': handler,
+        });
+      });
+      it.each([
+        ['reply', { id, response: data, isDisposed: true }],
+        ['error reply', { id, status: 'error', err: NO_MESSAGE_HANDLER }],
+      ])("should not dispatch the server's own %s", async (_, packet) => {
+        // "users.*" also matches the reply channel ("users.created.reply").
+        await server.handleMessage(
+          'users.*',
+          JSON.stringify(packet),
+          null,
+          'users.created.reply',
+        );
+
+        expect(handler).not.toHaveBeenCalled();
+      });
+      it.each([
+        ['a request', JSON.stringify({ id, pattern: 'users.x.reply', data })],
+        ['a message without an id', JSON.stringify({ data })],
+      ])(
+        'should dispatch %s published to a ".reply" channel',
+        async (_, message) => {
+          await server.handleMessage('users.*', message, null, 'users.x.reply');
+
+          expect(handler).toHaveBeenCalledWith(data, expect.any(RedisContext));
+        },
+      );
+      it('should dispatch a reply to a handler registered on that channel', async () => {
+        const replyHandler = vi.fn();
+        untypedServer.messageHandlers.set('users.x.reply', replyHandler);
+        const reply = JSON.stringify({ id, response: data, isDisposed: true });
+
+        await server.handleMessage(
+          'users.x.reply',
+          reply,
+          null,
+          'users.x.reply',
+        );
+
+        expect(replyHandler).toHaveBeenCalled();
+      });
+      it('should not dispatch an own reply to "users.*" when "users.x.reply" has a handler too', async () => {
+        untypedServer.messageHandlers.set('users.x.reply', vi.fn());
+        const reply = JSON.stringify({ id, response: data, isDisposed: true });
+
+        await server.handleMessage('users.*', reply, null, 'users.x.reply');
+
+        expect(handler).not.toHaveBeenCalled();
+      });
+      it('should dispatch replies to a subscription that targets reply channels', async () => {
+        const monitor = vi.fn();
+        untypedServer.messageHandlers.set('*.reply', monitor);
+        const reply = JSON.stringify({ id, response: data, isDisposed: true });
+
+        await server.handleMessage('*.reply', reply, null, 'users.x.reply');
+
+        expect(monitor).toHaveBeenCalled();
+      });
+      describe('and an event pattern matches the channel of a message handler', () => {
+        let eventHandler: ReturnType<typeof vi.fn>;
+        let messageHandler: ReturnType<typeof vi.fn>;
+
+        beforeEach(() => {
+          eventHandler = Object.assign(
+            vi.fn(async () => 'event'),
+            { isEventHandler: true },
+          );
+          messageHandler = vi.fn(async () => 'message');
+          untypedServer.messageHandlers = objectToMap({
+            'users.*': eventHandler,
+            'users.get': messageHandler,
+          });
+          vi.spyOn(untypedServer.logger, 'warn').mockImplementation(() => {});
+        });
+        it('should answer a request with the message handler only', async () => {
+          const request = JSON.stringify({ id, pattern: 'users.get', data });
+
+          // Redis delivers the request once for each pattern that matches it
+          await server.handleMessage('users.*', request, null, 'users.get');
+          await server.handleMessage('users.get', request, null, 'users.get');
+          await new Promise(resolve => setImmediate(resolve));
+
+          expect(eventHandler).toHaveBeenCalledWith(
+            data,
+            expect.any(RedisContext),
+          );
+          expect(getPublisherSpy).toHaveBeenCalledExactlyOnceWith({
+            response: 'message',
+            isDisposed: true,
+          });
+        });
+        it('should still answer a request on a channel without a message handler with the event handler', async () => {
+          const request = JSON.stringify({ id, pattern: 'users.list', data });
+
+          await server.handleMessage('users.*', request, null, 'users.list');
+          await new Promise(resolve => setImmediate(resolve));
+
+          expect(getPublisherSpy).toHaveBeenCalledExactlyOnceWith({
+            response: 'event',
+            isDisposed: true,
+          });
+        });
+      });
+      describe('and a message pattern matches the channel of another message handler', () => {
+        let wildcardHandler: ReturnType<typeof vi.fn>;
+        let messageHandler: ReturnType<typeof vi.fn>;
+
+        beforeEach(() => {
+          wildcardHandler = vi.fn(async () => 'wildcard');
+          messageHandler = vi.fn(async () => 'message');
+          untypedServer.messageHandlers = objectToMap({
+            'users.*': wildcardHandler,
+            'users.get': messageHandler,
+          });
+        });
+        it('should answer a request with the message handler of its channel only', async () => {
+          const request = JSON.stringify({ id, pattern: 'users.get', data });
+
+          // Redis delivers the request once for each pattern that matches it
+          await server.handleMessage('users.*', request, null, 'users.get');
+          await server.handleMessage('users.get', request, null, 'users.get');
+          await new Promise(resolve => setImmediate(resolve));
+
+          expect(wildcardHandler).not.toHaveBeenCalled();
+          expect(getPublisherSpy).toHaveBeenCalledExactlyOnceWith({
+            response: 'message',
+            isDisposed: true,
+          });
+        });
+        it('should still answer a request on a channel without a message handler with the wildcard one', async () => {
+          const request = JSON.stringify({ id, pattern: 'users.list', data });
+
+          await server.handleMessage('users.*', request, null, 'users.list');
+          await new Promise(resolve => setImmediate(resolve));
+
+          expect(getPublisherSpy).toHaveBeenCalledExactlyOnceWith({
+            response: 'wildcard',
+            isDisposed: true,
+          });
+        });
+        it('should still dispatch an event to the wildcard handler', async () => {
+          const event = JSON.stringify({ pattern: 'users.get', data });
+
+          await server.handleMessage('users.*', event, null, 'users.get');
+
+          expect(wildcardHandler).toHaveBeenCalledWith(
+            data,
+            expect.any(RedisContext),
+          );
+        });
+      });
+    });
+  });
+
+  describe('processing end hook', () => {
+    const channel = 'test';
+    const id = '3';
+    let publishSpy: ReturnType<typeof vi.fn>;
+    let endHook: ReturnType<typeof vi.fn>;
+
+    const bindHandler = (handler: () => unknown) => {
+      publishSpy = vi.fn();
+      vi.spyOn(server, 'getPublisher').mockImplementation(() => publishSpy);
+      vi.spyOn(server, 'parseMessage').mockImplementation(
+        () => ({ id, data: 'test' }) as any,
+      );
+      endHook = vi.fn();
+      untypedServer.onProcessingStartHook = (
+        _transportId: unknown,
+        _ctx: unknown,
+        fn: () => Promise<void>,
+      ) => fn();
+      untypedServer.onProcessingEndHook = endHook;
+      untypedServer.messageHandlers = objectToMap({
+        [channel]: (async () => handler()) as any,
+      });
+    };
+    const handleMessage = () =>
+      server.handleMessage(channel, JSON.stringify({ id }), null!, channel);
+    const flush = () => new Promise(resolve => setImmediate(resolve));
+
+    it('should run the hook once when the response stream emits several values', async () => {
+      bindHandler(() => of('first', 'second', 'third'));
+
+      await handleMessage();
+      await flush();
+
+      expect(publishSpy).toHaveBeenCalledTimes(3);
+      expect(endHook).toHaveBeenCalledOnce();
+    });
+    it('should run the hook when the handler rejects', async () => {
+      bindHandler(() => {
+        throw new Error('handler failed');
+      });
+
+      await expect(handleMessage()).rejects.toThrow('handler failed');
+
+      expect(endHook).toHaveBeenCalledOnce();
+    });
+  });
+  describe('getPublisher', () => {
+    let publisherSpy: ReturnType<typeof vi.fn>;
+    let pub, publisher;
+
+    const id = '1';
+    const pattern = 'test';
+    const context = new RedisContext([] as any);
+
+    beforeEach(() => {
+      publisherSpy = vi.fn();
+      pub = {
+        publish: publisherSpy,
+      };
+      publisher = server.getPublisher(pub, pattern, id, context);
+    });
+    it(`should return function`, () => {
+      expect(typeof server.getPublisher(null, null, id, context)).toEqual(
+        'function',
+      );
+    });
+    it(`should call "publish" with expected arguments`, () => {
+      const respond = 'test';
+      publisher({ respond, id });
+      expect(publisherSpy).toHaveBeenCalledWith(
+        `${pattern}.reply`,
+        JSON.stringify({ respond, id }),
+      );
+    });
+  });
+  describe('parseMessage', () => {
+    it(`should return parsed json`, () => {
+      const obj = { test: 'test' };
+      expect(server.parseMessage(obj)).toEqual(JSON.parse(JSON.stringify(obj)));
+    });
+    it(`should not parse argument if it is not an object`, () => {
+      const content = 'test';
+      expect(server.parseMessage(content)).toBe(content);
+    });
+  });
+  describe('getRequestPattern', () => {
+    const test = 'test';
+    it(`should leave pattern as it is`, () => {
+      const expectedResult = test;
+      expect(server.getRequestPattern(test)).toBe(expectedResult);
+    });
+  });
+  describe('getReplyPattern', () => {
+    const test = 'test';
+    it(`should append ".reply" to string`, () => {
+      const expectedResult = test + '.reply';
+      expect(server.getReplyPattern(test)).toBe(expectedResult);
+    });
+  });
+  describe('getClientOptions', () => {
+    it('should return options object with "retryStrategy" and call "createRetryStrategy"', () => {
+      const createSpy = vi.spyOn(server, 'createRetryStrategy');
+      const { retryStrategy } = server.getClientOptions()!;
+      try {
+        retryStrategy!(0);
+      } catch {
+        // Ignore
+      }
+      expect(createSpy).toHaveBeenCalled();
+    });
+  });
+  describe('createRetryStrategy', () => {
+    describe('when is terminated', () => {
+      it('should return undefined', () => {
+        untypedServer.isManuallyClosed = true;
+        const result = server.createRetryStrategy(0);
+        expect(result).toBeUndefined();
+      });
+    });
+    describe('when "retryAttempts" does not exist', () => {
+      it('should return undefined', () => {
+        untypedServer.options.options = {};
+        untypedServer.options.options.retryAttempts = undefined;
+
+        expect(server.createRetryStrategy(4)).toBeUndefined();
+      });
+    });
+    describe('when "attempts" count is max', () => {
+      it('should return undefined', () => {
+        untypedServer.options.options = {};
+        untypedServer.options.options.retryAttempts = 3;
+
+        expect(server.createRetryStrategy(4)).toBeUndefined();
+      });
+    });
+    describe('otherwise', () => {
+      it('should return delay (ms)', () => {
+        untypedServer.options = {};
+        untypedServer.isManuallyClosed = false;
+        untypedServer.options.retryAttempts = 3;
+        untypedServer.options.retryDelay = 3;
+        const result = server.createRetryStrategy(2);
+        expect(result).toEqual(untypedServer.options.retryDelay);
+      });
+    });
+  });
+  describe('handleEvent', () => {
+    const channel = 'test';
+    const data = 'test';
+
+    it('should call handler with expected arguments', async () => {
+      const handler = vi.fn();
+      untypedServer.messageHandlers = objectToMap({
+        [channel]: handler,
+      });
+
+      await server.handleEvent(
+        channel,
+        { pattern: '', data },
+        new BaseRpcContext([]),
+      );
+      expect(handler).toHaveBeenCalledWith(data, expect.any(BaseRpcContext));
+    });
+  });
+
+  describe('createRedisClient', () => {
+    it('should not set clientInfoTag when not provided', async () => {
+      const serverWithoutTag = new ServerRedis({});
+      const redisClient = await serverWithoutTag.createRedisClient();
+
+      expect(redisClient).toBeTruthy();
+      // Verify no clientInfoTag was set (opt-in only)
+      expect(redisClient.options.clientInfoTag).toBeUndefined();
+    });
+
+    it('should use clientInfoTag when provided', async () => {
+      const serverWithTag = new ServerRedis({ clientInfoTag: 'my-app' });
+      const redisClient = await serverWithTag.createRedisClient();
+
+      expect(redisClient).toBeTruthy();
+      // Verify the clientInfoTag was used
+      expect(redisClient.options.clientInfoTag).toBe('my-app');
+    });
+  });
+});

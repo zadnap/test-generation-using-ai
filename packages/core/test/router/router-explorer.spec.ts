@@ -1,0 +1,544 @@
+import { PATH_METADATA } from '../../../common/constants.js';
+import { Controller } from '../../../common/decorators/core/controller.decorator.js';
+import {
+  All,
+  Get,
+  Post,
+} from '../../../common/decorators/http/request-mapping.decorator.js';
+import { RequestMethod } from '../../../common/enums/request-method.enum.js';
+import { VersioningType } from '../../../common/enums/version-type.enum.js';
+import { NotFoundException } from '../../../common/exceptions/not-found.exception.js';
+import { Injector } from '../../../core/injector/injector.js';
+import { ApplicationConfig } from '../../application-config.js';
+import { UnknownRequestMappingException } from '../../errors/exceptions/unknown-request-mapping.exception.js';
+import { ExecutionContextHost } from '../../helpers/execution-context-host.js';
+import { STATIC_CONTEXT } from '../../injector/constants.js';
+import { NestContainer } from '../../injector/container.js';
+import { InstanceWrapper } from '../../injector/instance-wrapper.js';
+import { GraphInspector } from '../../inspector/graph-inspector.js';
+import { MetadataScanner } from '../../metadata-scanner.js';
+import { RoutePathMetadata } from '../../router/interfaces/route-path-metadata.interface.js';
+import { RoutePathFactory } from '../../router/route-path-factory.js';
+import { RouterExceptionFilters } from '../../router/router-exception-filters.js';
+import { RouterExplorer } from '../../router/router-explorer.js';
+import { NoopHttpAdapter } from '../utils/noop-adapter.js';
+
+describe('RouterExplorer', () => {
+  @Controller('global')
+  class TestRoute {
+    @Get('test')
+    public getTest() {}
+
+    @Post('test')
+    public postTest() {}
+
+    @All('another-test')
+    public anotherTest() {}
+
+    @Get(['foo', 'bar'])
+    public getTestUsingArray() {}
+  }
+
+  @Controller(['global', 'global-alias'])
+  class TestRouteAlias {
+    @Get('test')
+    public getTest() {}
+
+    @Post('test')
+    public postTest() {}
+
+    @All('another-test')
+    public anotherTest() {}
+
+    @Get(['foo', 'bar'])
+    public getTestUsingArray() {}
+  }
+
+  class ClassWithMissingControllerDecorator {}
+
+  let routerBuilder: RouterExplorer;
+  let container: NestContainer;
+  let injector: Injector;
+  let exceptionsFilter: RouterExceptionFilters;
+  let applicationConfig: ApplicationConfig;
+  let routePathFactory: RoutePathFactory;
+  let graphInspector: GraphInspector;
+
+  beforeEach(() => {
+    container = new NestContainer();
+
+    applicationConfig = new ApplicationConfig();
+    injector = new Injector();
+    routePathFactory = new RoutePathFactory(applicationConfig);
+    graphInspector = new GraphInspector(container);
+    exceptionsFilter = new RouterExceptionFilters(
+      container,
+      applicationConfig,
+      null!,
+    );
+    routerBuilder = new RouterExplorer(
+      new MetadataScanner(),
+      container,
+      injector,
+      null!,
+      exceptionsFilter,
+      applicationConfig,
+      routePathFactory,
+      graphInspector,
+    );
+  });
+
+  describe('applyPathsToRouterProxy', () => {
+    it('should method return expected object which represent single route', () => {
+      const bindStub = vi
+        .spyOn(routerBuilder, 'applyCallbackToRouter' as any)
+        .mockImplementation(() => {});
+      const paths = [
+        { path: [''], requestMethod: RequestMethod.GET },
+        { path: ['test'], requestMethod: RequestMethod.GET },
+        { path: ['foo', 'bar'], requestMethod: RequestMethod.GET },
+      ];
+
+      const mockInstanceWrapper = { instance: {} } as any;
+      routerBuilder.applyPathsToRouterProxy(
+        null!,
+        paths as any,
+        mockInstanceWrapper,
+        '',
+        {},
+        '',
+      );
+
+      expect(bindStub).toHaveBeenCalledWith(
+        null,
+        paths[0],
+        mockInstanceWrapper,
+        '',
+        { methodVersion: undefined },
+        '',
+        {},
+      );
+      expect(bindStub).toHaveBeenCalledTimes(paths.length);
+    });
+
+    it('should method return expected object which represents a single versioned route', () => {
+      const bindStub = vi
+        .spyOn(routerBuilder, 'applyCallbackToRouter' as any)
+        .mockImplementation(() => {});
+      const paths = [
+        { path: [''], requestMethod: RequestMethod.GET },
+        { path: ['test'], requestMethod: RequestMethod.GET },
+        { path: ['foo', 'bar'], requestMethod: RequestMethod.GET },
+      ];
+
+      const routePathMetadata: RoutePathMetadata = {
+        versioningOptions: { type: VersioningType.URI },
+      };
+      const mockInstanceWrapper = { instance: {} } as any;
+      routerBuilder.applyPathsToRouterProxy(
+        null!,
+        paths as any,
+        mockInstanceWrapper,
+        '',
+        routePathMetadata,
+        '1',
+      );
+
+      expect(bindStub).toHaveBeenCalledWith(
+        null,
+        paths[0],
+        mockInstanceWrapper,
+        '',
+        routePathMetadata,
+        '1',
+        {},
+      );
+      expect(bindStub).toHaveBeenCalledTimes(paths.length);
+    });
+  });
+
+  describe('applyCallbackToRouter', () => {
+    it('should register a route handler named after its controller and method', () => {
+      const get = vi.fn();
+      const router = { get };
+      const instance = new TestRoute();
+      container.setHttpAdapter({});
+      vi.spyOn(routerBuilder as any, 'createCallbackProxy').mockReturnValue(
+        () => {},
+      );
+      const instanceWrapper = {
+        id: 'test-route',
+        instance,
+        name: TestRoute.name,
+        isDependencyTreeStatic: () => true,
+      } as any;
+
+      (routerBuilder as any).applyCallbackToRouter(
+        router,
+        {
+          path: ['test'],
+          requestMethod: RequestMethod.GET,
+          targetCallback: instance.getTest,
+          methodName: 'getTest',
+        },
+        instanceWrapper,
+        '',
+        { ctrlPath: 'global' },
+        '',
+      );
+
+      expect(get).toHaveBeenCalledOnce();
+      expect(get.mock.calls[0][1].name).toBe('TestRoute.getTest');
+    });
+
+    it('should create the proxy of a static controller with the controller id as inquirer id', () => {
+      const instance = new TestRoute();
+      container.setHttpAdapter({});
+      const createCallbackProxy = vi
+        .spyOn(routerBuilder as any, 'createCallbackProxy')
+        .mockReturnValue(() => {});
+
+      (routerBuilder as any).applyCallbackToRouter(
+        { get: vi.fn() },
+        {
+          path: ['test'],
+          requestMethod: RequestMethod.GET,
+          targetCallback: instance.getTest,
+          methodName: 'getTest',
+        },
+        {
+          id: 'test-route',
+          instance,
+          name: TestRoute.name,
+          isDependencyTreeStatic: () => true,
+        } as any,
+        'module-key',
+        { ctrlPath: 'global' },
+        '',
+      );
+
+      expect(createCallbackProxy).toHaveBeenCalledWith(
+        instance,
+        instance.getTest,
+        'getTest',
+        'module-key',
+        RequestMethod.GET,
+        STATIC_CONTEXT,
+        'test-route',
+      );
+    });
+
+    it('should register a route-triggered wrapper with the route metadata, version and name', async () => {
+      const get = vi.fn();
+      const onRouteTriggered = vi.fn();
+      const instance = new TestRoute();
+      const routeHandler = Object.assign(vi.fn(), { version: '1' });
+      container.setHttpAdapter({ getOnRouteTriggered: () => onRouteTriggered });
+      vi.spyOn(routerBuilder as any, 'createCallbackProxy').mockReturnValue(
+        routeHandler,
+      );
+
+      (routerBuilder as any).applyCallbackToRouter(
+        { get },
+        {
+          path: ['test'],
+          requestMethod: RequestMethod.GET,
+          targetCallback: instance.getTest,
+          methodName: 'getTest',
+        },
+        {
+          id: 'test-route',
+          instance,
+          name: TestRoute.name,
+          isDependencyTreeStatic: () => true,
+        } as any,
+        '',
+        { ctrlPath: 'global' },
+        '',
+      );
+
+      const handler = get.mock.calls[0][1];
+      expect(handler).not.toBe(routeHandler);
+      expect(handler.name).toBe('TestRoute.getTest');
+      expect(handler.version).toBe('1');
+      expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe('test');
+
+      await handler('req', 'res');
+      expect(onRouteTriggered).toHaveBeenCalledWith(
+        RequestMethod.GET,
+        '/global/test',
+      );
+      expect(routeHandler).toHaveBeenCalledWith('req', 'res');
+    });
+  });
+
+  describe('registerResolvedRoute', () => {
+    const createResolvedRoute = (instance: TestRoute, handler: Function) =>
+      ({
+        method: RequestMethod.GET,
+        path: '/global/test',
+        handler,
+        targetCallback: instance.getTest,
+        methodName: 'getTest',
+      }) as any;
+
+    it('should register a route-triggered wrapper with the route metadata and version', async () => {
+      const get = vi.fn();
+      const onRouteTriggered = vi.fn();
+      const instance = new TestRoute();
+      const routeHandler = Object.assign(vi.fn(), { version: '1' });
+      container.setHttpAdapter({ getOnRouteTriggered: () => onRouteTriggered });
+
+      routerBuilder.registerResolvedRoute(
+        { get } as any,
+        createResolvedRoute(instance, routeHandler),
+      );
+
+      const handler = get.mock.calls[0][1];
+      expect(handler).not.toBe(routeHandler);
+      expect(handler.version).toBe('1');
+      expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe('test');
+
+      await handler('req', 'res');
+      expect(onRouteTriggered).toHaveBeenCalledWith(
+        RequestMethod.GET,
+        '/global/test',
+      );
+      expect(routeHandler).toHaveBeenCalledWith('req', 'res');
+    });
+  });
+
+  describe('extractRouterPath', () => {
+    it('should return expected path', () => {
+      expect(routerBuilder.extractRouterPath(TestRoute)).toEqual(['/global']);
+    });
+
+    it('should return expected path with alias', () => {
+      expect(routerBuilder.extractRouterPath(TestRouteAlias)).toEqual([
+        '/global',
+        '/global-alias',
+      ]);
+    });
+
+    it("should throw UnknownRequestMappingException when missing the `@Controller()` decorator in the class, displaying class's name", () => {
+      expect(() =>
+        routerBuilder.extractRouterPath(ClassWithMissingControllerDecorator),
+      ).toThrow(
+        UnknownRequestMappingException,
+        /ClassWithMissingControllerDecorator/,
+      );
+    });
+  });
+
+  describe('createRequestScopedHandler', () => {
+    let nextSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      vi.spyOn(injector, 'loadPerContext').mockImplementation(() => {
+        throw new Error();
+      });
+      nextSpy = vi.fn();
+      vi.spyOn(exceptionsFilter, 'create').mockImplementation(
+        () =>
+          ({
+            next: nextSpy,
+          }) as any,
+      );
+    });
+
+    describe('when "loadPerContext" throws', () => {
+      const moduleKey = 'moduleKey';
+      const methodKey = 'methodKey';
+      const module = {
+        controllers: new Map(),
+      } as any;
+      const wrapper = new InstanceWrapper({
+        instance: { [methodKey]: {} },
+      });
+
+      it('should delegate error to exception filters', async () => {
+        const handler = routerBuilder.createRequestScopedHandler(
+          wrapper,
+          RequestMethod.ALL,
+          module,
+          moduleKey,
+          methodKey,
+        );
+        await handler(null!, null, null!);
+
+        expect(nextSpy).toHaveBeenCalled();
+        expect(nextSpy.mock.calls[0][0]).toBeInstanceOf(Error);
+        expect(nextSpy.mock.calls[0][1]).toBeInstanceOf(ExecutionContextHost);
+      });
+
+      it('should delegate errors to the filters of the controller that inherits the handler', async () => {
+        class BaseController {
+          list() {}
+        }
+        class FirstController extends BaseController {}
+        class SecondController extends BaseController {}
+
+        const firstWrapper = new InstanceWrapper({
+          instance: new FirstController(),
+        });
+        const secondWrapper = new InstanceWrapper({
+          instance: new SecondController(),
+        });
+        const firstExceptionsHandler = { next: vi.fn() };
+        const secondExceptionsHandler = { next: vi.fn() };
+        vi.spyOn(exceptionsFilter, 'create').mockImplementation(
+          instance =>
+            (instance === firstWrapper.instance
+              ? firstExceptionsHandler
+              : secondExceptionsHandler) as any,
+        );
+
+        const firstHandler = routerBuilder.createRequestScopedHandler(
+          firstWrapper,
+          RequestMethod.GET,
+          module,
+          moduleKey,
+          'list',
+        );
+        const secondHandler = routerBuilder.createRequestScopedHandler(
+          secondWrapper,
+          RequestMethod.GET,
+          module,
+          moduleKey,
+          'list',
+        );
+        await firstHandler(null!, null, null!);
+        await secondHandler(null!, null, null!);
+
+        expect(firstExceptionsHandler.next).toHaveBeenCalledOnce();
+        expect(secondExceptionsHandler.next).toHaveBeenCalledOnce();
+      });
+    });
+  });
+
+  describe('applyHostFilter', () => {
+    let handler: ReturnType<typeof vi.fn>;
+    let hostFilter: (req: any, res: any, next?: () => void) => unknown;
+
+    beforeEach(() => {
+      container.setHttpAdapter({
+        getRequestHostname: (req: any) => req.hostname,
+        getRequestMethod: (req: any) => req.method,
+        getRequestUrl: (req: any) => req.url,
+      });
+      handler = vi.fn();
+      // We're using type assertion here because `applyHostFilter` is private
+      hostFilter = (routerBuilder as any).applyHostFilter(
+        ':tenant.example.com',
+        handler,
+      );
+    });
+
+    it('should call the handler with the host params when the host matches', () => {
+      const req: Record<string, any> = { hostname: 'acme.example.com' };
+      hostFilter(req, 'res');
+
+      expect(handler).toHaveBeenCalledWith(req, 'res', undefined);
+      expect(req.hosts).toEqual({ tenant: 'acme' });
+    });
+
+    it('should pass a request for another host on to the next route', () => {
+      const next = vi.fn();
+      hostFilter({ hostname: 'example.org' }, 'res', next);
+
+      expect(next).toHaveBeenCalledOnce();
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    describe('when the adapter cannot pass the request on', () => {
+      const req = { hostname: 'example.org', method: 'GET', url: '/host?a=1' };
+
+      it('should answer a request for another host with 404 without the hosts', () => {
+        vi.spyOn((routerBuilder as any).logger, 'warn').mockImplementation(
+          () => {},
+        );
+        let error: unknown;
+        try {
+          hostFilter(req, 'res');
+        } catch (e) {
+          error = e;
+        }
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect((error as NotFoundException).getResponse()).toEqual({
+          message: 'Cannot GET /host?a=1',
+          error: 'Not Found',
+          statusCode: 404,
+        });
+        expect(handler).not.toHaveBeenCalled();
+      });
+
+      it('should warn once that the adapter does not support filtering on hosts', () => {
+        const warn = vi
+          .spyOn((routerBuilder as any).logger, 'warn')
+          .mockImplementation(() => {});
+
+        expect(() => hostFilter(req, 'res')).toThrow(NotFoundException);
+        expect(() => hostFilter(req, 'res')).toThrow(NotFoundException);
+
+        expect(warn).toHaveBeenCalledOnce();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'HTTP adapter does not support filtering on host: ":tenant.example.com"',
+          ),
+        );
+      });
+    });
+  });
+
+  describe('applyVersionFilter', () => {
+    it('should call and return the `applyVersionFilter` from the underlying http server', () => {
+      const router = new NoopHttpAdapter({});
+      const applyVersionFilterSpy = vi.spyOn(router, 'applyVersionFilter');
+      const routePathMetadata: RoutePathMetadata = {
+        methodVersion: vi.fn() as unknown as RoutePathMetadata['methodVersion'],
+        versioningOptions:
+          vi.fn() as unknown as RoutePathMetadata['versioningOptions'],
+      };
+      const handler = vi.fn();
+
+      // We're using type assertion here because `applyVersionFilter` is private
+      const versionFilter = (routerBuilder as any).applyVersionFilter(
+        router,
+        routePathMetadata,
+        handler,
+      );
+
+      expect(applyVersionFilterSpy).toHaveBeenCalledWith(
+        handler,
+        routePathMetadata.methodVersion!,
+        routePathMetadata.versioningOptions!,
+      );
+
+      expect(applyVersionFilterSpy.mock.results[0].value).toBe(versionFilter);
+    });
+  });
+
+  describe('copyMetadataToCallback', () => {
+    it('should then copy the metadata from the original callback to the target callback', () => {
+      const originalCallback = () => {};
+      Reflect.defineMetadata(
+        'test_metadata_key',
+        'test_metadata_value',
+        originalCallback,
+      );
+
+      const targetCallback = () => {};
+
+      // We're using type assertion here because `copyMetadataToCallback` is private
+      (routerBuilder as any).copyMetadataToCallback(
+        originalCallback,
+        targetCallback,
+      );
+
+      expect(Reflect.getMetadata('test_metadata_key', targetCallback)).toBe(
+        'test_metadata_value',
+      );
+    });
+  });
+});
