@@ -32,6 +32,7 @@ export default defineConfig({
     include: ['ai-generated-tests/**/*.spec.ts'],
     coverage: {
       provider: 'v8',
+      reportOnFailure: true,
       include:
         coverageScope === '*'
           ? ['packages/**/*.ts']
