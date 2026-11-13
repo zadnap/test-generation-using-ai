@@ -1,16 +1,31 @@
 import {
   HttpStatus,
   InternalServerErrorException,
+  NotFoundException,
   RequestMethod,
+  StreamableFile,
   VERSION_NEUTRAL,
   VersioningType,
 } from '@nestjs/common';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { PassThrough, Readable } from 'stream';
 import { describe, expect, it, vi } from 'vitest';
 import { NodeAdapter } from '../../../../packages/platform-node/adapters/node-adapter.js';
-import { NodeRequest, NodeResponse } from '../../../../packages/platform-node/adapters/node-request.js';
+import {
+  NodeRequest,
+  NodeResponse,
+  ROUTE_ERROR_HANDLER,
+  SHUTTING_DOWN,
+} from '../../../../packages/platform-node/adapters/node-request.js';
+import {
+  PARAM_TOO_LONG_KEY,
+} from '../../../../packages/platform-node/router/node-router.js';
 import { NodeRouter } from '../../../../packages/platform-node/router/node-router.js';
 
 function makeRes(init: any = {}) {
+  const { headersSent = false, ...rest } = init;
   const headers = new Map<string, any>();
   const res: any = Object.create(NodeResponse.prototype);
   Object.assign(res, {
@@ -30,11 +45,11 @@ function makeRes(init: any = {}) {
     redirect: vi.fn(),
     appendHeader: vi.fn(),
     on: vi.fn(),
-    ...init,
+    ...rest,
   });
   Object.defineProperty(res, 'headersSent', {
     configurable: true,
-    get: () => false,
+    get: () => headersSent,
   });
   return res;
 }
@@ -523,6 +538,832 @@ describe('NodeAdapter', () => {
       const adapter = new NodeAdapter();
       const error = new Error('unknown');
       expect(adapter.mapException(error)).toBe(error);
+    });
+
+    it('should hide an exposed http error whose status has no reason phrase', () => {
+      const adapter = new NodeAdapter();
+      const mapped: any = adapter.mapException(
+        Object.assign(new Error('teapot'), {
+          status: 499,
+          statusCode: 499,
+          expose: false,
+        }),
+      );
+      expect(mapped.getStatus()).toBe(499);
+      expect(mapped.message).toBe('Internal server error');
+    });
+  });
+
+  describe('constructor and parser registration', () => {
+    it('should create a request class when an option changes requests', () => {
+      const adapter = new NodeAdapter({ trustProxy: true });
+      const prototype = (adapter.getInstance() as any).requestPrototype;
+      expect(prototype).toBeDefined();
+      expect(prototype).not.toBe(NodeRequest.prototype);
+    });
+
+    it('should register raw-body parsers and store rawBody', async () => {
+      const adapter = new NodeAdapter();
+      adapter.registerParserMiddleware(undefined, true);
+      const stack = (adapter.getInstance() as any).stack;
+      const jsonParser = stack.find(
+        (layer: any) => layer.handler?.name === 'jsonParser',
+      ).handler;
+      const req: any = Readable.from([Buffer.from('{"a":1}')]);
+      req.headers = {
+        'content-type': 'application/json',
+        'content-length': '7',
+      };
+      req.complete = true;
+      await new Promise<void>((resolve, reject) => {
+        jsonParser(req, {}, (error?: Error) =>
+          error ? reject(error) : resolve(),
+        );
+      });
+      expect(req.body).toEqual({ a: 1 });
+      expect(Buffer.isBuffer(req.rawBody)).toBe(true);
+    });
+
+    it('should register parsers without raw-body verification', () => {
+      const adapter = new NodeAdapter();
+      adapter.registerParserMiddleware(undefined, false);
+      expect((adapter.getInstance() as any).hasMiddleware('jsonParser')).toBe(
+        true,
+      );
+      expect(
+        (adapter.getInstance() as any).hasMiddleware('urlencodedParser'),
+      ).toBe(true);
+    });
+
+    it('should pass parser options through when raw-body is disabled', () => {
+      const adapter = new NodeAdapter();
+      adapter.useBodyParser('json', false, { limit: 10 });
+      expect((adapter.getInstance() as any).hasMiddleware('jsonParser')).toBe(
+        true,
+      );
+    });
+
+    it('should not register the default parsers twice', () => {
+      const adapter = new NodeAdapter();
+      adapter.registerParserMiddleware(undefined, true);
+      adapter.registerParserMiddleware(undefined, false);
+      const parsers = (adapter.getInstance() as any).stack.filter(
+        (layer: any) =>
+          !layer.table &&
+          ['jsonParser', 'urlencodedParser'].includes(layer.handler?.name),
+      );
+      expect(parsers).toHaveLength(2);
+    });
+  });
+
+  describe('StreamableFile replies', () => {
+    function makeWritableRes(init: any = {}) {
+      const headers = new Map<string, any>();
+      const res: any = new PassThrough();
+      Object.assign(res, {
+        statusCode: 200,
+        locals: {},
+        req: { method: 'GET' },
+        getHeader: vi.fn((name: string) => headers.get(name.toLowerCase())),
+        hasHeader: vi.fn((name: string) => headers.has(name.toLowerCase())),
+        setHeader: vi.fn((name: string, value: any) =>
+          headers.set(name.toLowerCase(), value),
+        ),
+        writeHead: vi.fn(),
+        ...init,
+      });
+      return res;
+    }
+
+    it('should pipe a StreamableFile to the response', async () => {
+      const adapter = new NodeAdapter();
+      const stream = Readable.from([Buffer.from('abc')]);
+      const file = new StreamableFile(stream, { type: 'text/plain', length: 3 });
+      const res = makeWritableRes();
+      const finished = new Promise(resolve => res.once('finish', resolve));
+      adapter.reply(res, file);
+      res.resume();
+      await finished;
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain');
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Length', 3);
+    });
+
+    it('should hand an already errored stream to the error handler', () => {
+      const adapter = new NodeAdapter();
+      const stream = new Readable({ read() {} });
+      stream.on('error', () => {});
+      stream.destroy(new Error('boom'));
+      const file = new StreamableFile(stream);
+      const res = makeRes();
+      adapter.reply(res, file);
+      expect(res.statusCode).toBe(400);
+      expect(res.end).toHaveBeenCalledWith('Bad Request');
+    });
+
+    it('should end a HEAD response without piping the stream', async () => {
+      const adapter = new NodeAdapter();
+      const stream = Readable.from([Buffer.from('abc')]);
+      const file = new StreamableFile(stream);
+      const res = makeWritableRes({ req: { method: 'HEAD' } });
+      const finished = new Promise(resolve => res.once('finish', resolve));
+      adapter.reply(res, file);
+      res.resume();
+      await finished;
+      expect(stream.readableEnded || stream.destroyed).toBe(true);
+    });
+
+    it('should end a HEAD response for a stream that already ended', async () => {
+      const adapter = new NodeAdapter();
+      const stream = Readable.from([]);
+      stream.resume();
+      await new Promise(resolve => stream.once('end', resolve));
+      const file = new StreamableFile(stream);
+      const res = makeWritableRes({ req: { method: 'HEAD' } });
+      const finished = new Promise(resolve => res.once('finish', resolve));
+      adapter.reply(res, file);
+      await finished;
+      expect(stream.readableEnded).toBe(true);
+    });
+
+    it('should destroy the source when the response finishes early', async () => {
+      const adapter = new NodeAdapter();
+      const stream = new Readable({ read() {} });
+      const file = new StreamableFile(stream);
+      const res = makeWritableRes();
+      adapter.reply(res, file);
+      res.destroy();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(stream.destroyed).toBe(true);
+    });
+  });
+
+  describe('reply content-type handling', () => {
+    it('should fall back to the literal Error text for an unknown status', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ statusCode: 599 });
+      adapter.reply(res, new Error('x'), 599);
+      expect(res.end).toHaveBeenCalledWith(
+        '{"statusCode":599,"message":"Error"}',
+      );
+    });
+
+    it('should override a mismatched content type for an object body', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({
+        statusCode: 404,
+        getHeader: vi.fn(() => 'text/html'),
+      });
+      adapter.reply(res, { detail: 'not found' }, 404);
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'Content-Type',
+        'application/json; charset=utf-8',
+      );
+    });
+
+    it('should not warn for an object body with a success status', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ getHeader: vi.fn(() => 'text/html') });
+      adapter.reply(res, { ok: true }, 200);
+      expect(res.setHeader).not.toHaveBeenCalledWith(
+        'Content-Type',
+        'application/json; charset=utf-8',
+      );
+    });
+
+    it('should warn for an object body with a success status and a 5xx reply', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({
+        statusCode: 500,
+        getHeader: vi.fn(() => 'text/html'),
+      });
+      adapter.reply(res, { statusCode: 200 }, 500);
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'Content-Type',
+        'application/json; charset=utf-8',
+      );
+    });
+
+    it('should send a typed array through a wrapped res.send()', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ send: vi.fn() });
+      const body = Buffer.from([1, 2]);
+      adapter.reply(res, body);
+      expect(res.send).toHaveBeenCalledWith(body);
+    });
+
+    it('should serialize an object whose toJSON returns undefined', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes();
+      adapter.reply(res, { toJSON: () => undefined });
+      expect(res.end).toHaveBeenCalledWith('');
+    });
+  });
+
+  describe('views and static assets', () => {
+    const dirs: string[] = [];
+    const makeDir = () => {
+      const dir = mkdtempSync(join(tmpdir(), 'nest-adapter-'));
+      dirs.push(dir);
+      return dir;
+    };
+
+    it('should render through a configured engine', async () => {
+      const dir = makeDir();
+      writeFileSync(join(dir, 'page.tpl'), 'x');
+      const adapter = new NodeAdapter();
+      adapter.setViewEngine({
+        engine: { tpl: (_file: string, _data: any, cb: any) => cb(null, '<p>x</p>') },
+        root: dir,
+      });
+      const res = makeRes();
+      await adapter.render(res, 'page', {});
+      expect(res.writeHead).toHaveBeenCalledWith(
+        200,
+        expect.objectContaining({ 'Content-Type': 'text/html; charset=utf-8' }),
+      );
+      expect(res.end).toHaveBeenCalledWith('<p>x</p>');
+    });
+
+    it('should render through a wrapped res.send() and add a content type', async () => {
+      const dir = makeDir();
+      writeFileSync(join(dir, 'page.tpl'), 'x');
+      const adapter = new NodeAdapter();
+      adapter.setViewEngine({
+        engine: { tpl: (_file: string, _data: any, cb: any) => cb(null, 'ok') },
+        root: dir,
+      });
+      const res = makeRes({ send: vi.fn() });
+      await adapter.render(res, 'page', {});
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'Content-Type',
+        'text/html; charset=utf-8',
+      );
+      expect(res.send).toHaveBeenCalledWith('ok');
+    });
+
+    it('should keep an existing content type when a wrapped send is used', async () => {
+      const dir = makeDir();
+      writeFileSync(join(dir, 'page.tpl'), 'x');
+      const adapter = new NodeAdapter();
+      adapter.setViewEngine({
+        engine: { tpl: (_file: string, _data: any, cb: any) => cb(null, 'ok') },
+        root: dir,
+      });
+      const res = makeRes({ send: vi.fn() });
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      await adapter.render(res, 'page', {});
+      expect(res.send).toHaveBeenCalledWith('ok');
+    });
+
+    it('should mount static assets at a prefix and at the root', () => {
+      const adapter = new NodeAdapter();
+      adapter.useStaticAssets(process.cwd(), { prefix: '/assets' });
+      adapter.useStaticAssets(process.cwd());
+      expect((adapter.getInstance() as any).stack.length).toBeGreaterThan(0);
+    });
+
+    it('should clean up temporary view directories', () => {
+      for (const dir of dirs.splice(0)) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      expect(dirs).toHaveLength(0);
+    });
+  });
+
+  describe('not found handlers', () => {
+    it('should answer a too long parameter with a 414', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      adapter.setNotFoundHandler(handler);
+      const layer = (adapter.getInstance() as any).stack.at(-1);
+      const req = makeRequest({ [PARAM_TOO_LONG_KEY]: true });
+      const next = vi.fn();
+      layer.handler(req, {}, next);
+      expect(next.mock.calls[0][0].status).toBe(414);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should call the handler for a normal miss', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      adapter.setNotFoundHandler(handler);
+      const layer = (adapter.getInstance() as any).stack.at(-1);
+      layer.handler(makeRequest(), {}, vi.fn());
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('should register excluded routes under a prefix', () => {
+      const adapter = new NodeAdapter();
+      adapter.setNotFoundHandler(vi.fn(), '/api', [
+        { path: '/health', method: RequestMethod.GET },
+      ] as any);
+      const stack = (adapter.getInstance() as any).stack;
+      expect(stack).toHaveLength(2);
+    });
+
+    it('should skip requests that belong to another registered prefix', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      adapter.setNotFoundHandler(handler, '/api');
+      adapter.setNotFoundHandler(handler);
+      const rootLayer = (adapter.getInstance() as any).stack.at(-1);
+      const next = vi.fn();
+      rootLayer.handler(makeRequest({ url: '/api/users' }), {}, next);
+      expect(next).toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should delegate other requests to the not-found handler', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      adapter.setNotFoundHandler(handler, '/api');
+      adapter.setNotFoundHandler(handler);
+      const rootLayer = (adapter.getInstance() as any).stack.at(-1);
+      rootLayer.handler(makeRequest({ url: '/other' }), {}, vi.fn());
+      expect(handler).toHaveBeenCalled();
+    });
+  });
+
+  describe('middleware factory paths', () => {
+    it('should mount a method-less middleware for an exact path', () => {
+      const adapter = new NodeAdapter();
+      const factory = adapter.createMiddlewareFactory(-1 as any);
+      expect(() => factory('/api$', vi.fn())).not.toThrow();
+    });
+
+    it('should mount a method-less middleware for a prefix path', () => {
+      const adapter = new NodeAdapter();
+      const factory = adapter.createMiddlewareFactory(-1 as any);
+      expect(() => factory('/api', vi.fn())).not.toThrow();
+    });
+
+    it('should use an exact middleware for a method and exact path', () => {
+      const adapter = new NodeAdapter();
+      const factory = adapter.createMiddlewareFactory(RequestMethod.GET);
+      expect(() => factory('/api$', vi.fn())).not.toThrow();
+    });
+
+    it('should report an invalid middleware path', () => {
+      const adapter = new NodeAdapter();
+      const factory = adapter.createMiddlewareFactory(RequestMethod.GET);
+      expect(() => factory('/a(b', vi.fn())).toThrow();
+    });
+  });
+
+  describe('server lifecycle', () => {
+    it('should return undefined when closing without a server', () => {
+      const adapter = new NodeAdapter();
+      expect(adapter.close()).toBeUndefined();
+    });
+
+    it('should close an initialized server', async () => {
+      const adapter = new NodeAdapter();
+      adapter.initHttpServer({});
+      await new Promise<void>(resolve => adapter.listen(0, resolve));
+      await expect(adapter.close()).resolves.toBeUndefined();
+    });
+
+    it('should create an HTTPS server when httpsOptions is given', async () => {
+      const adapter = new NodeAdapter();
+      adapter.initHttpServer({ httpsOptions: {} });
+      expect((adapter as any).httpServer).toBeDefined();
+      await adapter.close();
+    });
+
+    it('should map an EISDIR route error to a 404', () => {
+      const adapter = new NodeAdapter();
+      adapter.initHttpServer({});
+      const error = Object.assign(new Error('dir'), { code: 'EISDIR' });
+      const spy = vi.spyOn(adapter.getInstance(), 'handleError');
+      (adapter as any).httpServer[ROUTE_ERROR_HANDLER](
+        error,
+        makeRequest({ method: 'GET', url: '/dir' }),
+        makeRes(),
+      );
+      expect(spy.mock.calls[0][0]).toBeInstanceOf(NotFoundException);
+    });
+
+    it('should forward other route errors unchanged', () => {
+      const adapter = new NodeAdapter();
+      adapter.initHttpServer({});
+      const error = new Error('boom');
+      const spy = vi.spyOn(adapter.getInstance(), 'handleError');
+      (adapter as any).httpServer[ROUTE_ERROR_HANDLER](
+        error,
+        makeRequest(),
+        makeRes(),
+      );
+      expect(spy).toHaveBeenCalledWith(error, expect.anything(), expect.anything());
+    });
+
+    it('should answer 503 while shutting down when configured', () => {
+      const adapter = new NodeAdapter();
+      adapter.initHttpServer({ return503OnClosing: true });
+      const layer = (adapter.getInstance() as any).stack[0];
+      const passing = { setHeader: vi.fn(), end: vi.fn(), statusCode: 200 };
+      const next = vi.fn();
+      layer.handler(makeRequest(), passing, next);
+      expect(next).toHaveBeenCalled();
+      adapter.beforeClose();
+      const res = makeRes();
+      layer.handler(makeRequest(), res, vi.fn());
+      expect(res.statusCode).toBe(503);
+      expect(res.end).toHaveBeenCalledWith('Service Unavailable');
+    });
+
+    it('should track and destroy open connections when configured', () => {
+      const adapter = new NodeAdapter();
+      adapter.initHttpServer({ forceCloseConnections: true });
+      const socket: any = new PassThrough();
+      socket.destroy = vi.fn();
+      (adapter as any).httpServer.emit('connection', socket);
+      adapter.close();
+      expect(socket.destroy).toHaveBeenCalled();
+    });
+
+    it('should mark connections as shutting down without 503 responses', () => {
+      const adapter = new NodeAdapter();
+      adapter.initHttpServer({});
+      adapter.beforeClose();
+      expect((adapter as any).httpServer[SHUTTING_DOWN]).toBe(true);
+    });
+  });
+
+  describe('request and response hooks', () => {
+    it('should run the router when no request hook is set', () => {
+      const adapter = new NodeAdapter();
+      const spy = vi.spyOn(adapter.getInstance(), 'handle');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('should continue after a request hook calls done()', () => {
+      const adapter = new NodeAdapter();
+      adapter.setOnRequestHook((_req, _res, done) => done());
+      const spy = vi.spyOn(adapter.getInstance(), 'handle');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('should hand an error to the error handler', () => {
+      const adapter = new NodeAdapter();
+      const error = new Error('hook');
+      adapter.setOnRequestHook((_req, _res, done) => done(error));
+      const spy = vi.spyOn(adapter.getInstance(), 'handleError');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      expect(spy).toHaveBeenCalledWith(error, expect.anything(), expect.anything());
+    });
+
+    it('should ignore a later completion without an error', () => {
+      const adapter = new NodeAdapter();
+      adapter.setOnRequestHook((_req, _res, done) => {
+        done();
+        done();
+      });
+      const spy = vi.spyOn(adapter.getInstance(), 'handle');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('should log errors after the first completion', () => {
+      const adapter = new NodeAdapter();
+      adapter.setOnRequestHook((_req, _res, done) => {
+        done();
+        done(new Error('late'));
+      });
+      const logger = (adapter as any).logger;
+      const spy = vi.spyOn(logger, 'error');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('should forward a rejected request-hook promise', async () => {
+      const adapter = new NodeAdapter();
+      adapter.setOnRequestHook(() => Promise.reject(new Error('rejected')));
+      const spy = vi.spyOn(adapter.getInstance(), 'handleError');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('should wrap a rejection without a reason', async () => {
+      const adapter = new NodeAdapter();
+      adapter.setOnRequestHook(() => Promise.reject());
+      const spy = vi.spyOn(adapter.getInstance(), 'handleError');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      await new Promise(resolve => setImmediate(resolve));
+      expect(spy.mock.calls[0][0].message).toBe('Request hook failed');
+    });
+
+    it('should catch a thrown request-hook error', () => {
+      const adapter = new NodeAdapter();
+      adapter.setOnRequestHook(() => {
+        throw new Error('thrown');
+      });
+      const spy = vi.spyOn(adapter.getInstance(), 'handleError');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('should wrap a thrown falsy value', () => {
+      const adapter = new NodeAdapter();
+      adapter.setOnRequestHook(() => {
+        throw '';
+      });
+      const spy = vi.spyOn(adapter.getInstance(), 'handleError');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      expect(spy.mock.calls[0][0].message).toBe('Request hook failed');
+    });
+
+    it('should run a response hook on finish', () => {
+      const adapter = new NodeAdapter();
+      let finish!: () => void;
+      const res = makeRes({
+        on: vi.fn((_event: string, callback: () => void) => {
+          finish = callback;
+        }),
+      });
+      const hook = vi.fn();
+      adapter.setOnResponseHook(hook);
+      (adapter as any).handleRequest(makeRequest(), res);
+      finish();
+      expect(hook).toHaveBeenCalled();
+    });
+
+    it('should log a response hook error', () => {
+      const adapter = new NodeAdapter();
+      let finish!: () => void;
+      const res = makeRes({
+        on: vi.fn((_event: string, callback: () => void) => {
+          finish = callback;
+        }),
+      });
+      adapter.setOnResponseHook(() => {
+        throw new Error('response hook');
+      });
+      const spy = vi.spyOn((adapter as any).logger, 'error');
+      (adapter as any).handleRequest(makeRequest(), res);
+      finish();
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('should log a rejected response hook promise', async () => {
+      const adapter = new NodeAdapter();
+      let finish!: () => void;
+      const res = makeRes({
+        on: vi.fn((_event: string, callback: () => void) => {
+          finish = callback;
+        }),
+      });
+      adapter.setOnResponseHook(() => Promise.reject(new Error('async')));
+      const spy = vi.spyOn((adapter as any).logger, 'error');
+      (adapter as any).handleRequest(makeRequest(), res);
+      finish();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(spy).toHaveBeenCalled();
+    });
+  });
+
+  describe('private helpers', () => {
+    it('should cache injected prototypes', () => {
+      const adapter = new NodeAdapter();
+      const own = {};
+      const first = Object.create(own);
+      const second = Object.create(own);
+      (adapter as any).setInjectedPrototype(first, {});
+      (adapter as any).setInjectedPrototype(second, {});
+      expect(Object.getPrototypeOf(first)).toBe(Object.getPrototypeOf(second));
+    });
+
+    it('should destroy the socket when headers were sent', () => {
+      const adapter = new NodeAdapter();
+      const socket = { destroy: vi.fn() };
+      const req = makeRequest({ socket });
+      const res = makeRes({ headersSent: true });
+      (adapter as any).finalHandler(new Error('x'), req, res);
+      expect(socket.destroy).toHaveBeenCalled();
+    });
+
+    it('should answer a final error with its status and reason', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ getHeader: vi.fn(() => undefined) });
+      (adapter as any).finalHandler(
+        Object.assign(new Error('nope'), { status: 404 }),
+        makeRequest(),
+        res,
+      );
+      expect(res.statusCode).toBe(404);
+      expect(res.end).toHaveBeenCalledWith('Not Found');
+    });
+
+    it('should answer a final error without a status as 500', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes();
+      (adapter as any).finalHandler(
+        { message: 'bad' },
+        makeRequest(),
+        res,
+      );
+      expect(res.statusCode).toBe(500);
+    });
+
+    it('should answer an unmatched request with its path', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes();
+      (adapter as any).finalHandler(
+        undefined,
+        makeRequest({ method: 'POST', originalUrl: '/a/b?x=1', url: '/a/b?x=1' }),
+        res,
+      );
+      expect(res.statusCode).toBe(404);
+      expect(res.end).toHaveBeenCalledWith('Cannot POST /a/b');
+    });
+
+    it('should fall back to req.url when originalUrl is missing', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes();
+      (adapter as any).finalHandler(
+        undefined,
+        makeRequest({ method: 'GET', url: '/only' }),
+        res,
+      );
+      expect(res.end).toHaveBeenCalledWith('Cannot GET /only');
+    });
+
+    it('should use the error object when it has no stack', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes();
+      const logger = vi.spyOn((adapter as any).logger, 'error');
+      const error = { statusCode: 500, message: 'no stack' };
+      (adapter as any).finalHandler(error, makeRequest(), res);
+      expect(logger).toHaveBeenCalledWith(error);
+    });
+
+    it('should skip writing a body when endWithoutBody matches', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ statusCode: 204 });
+      (adapter as any).writeBody(res, 'x', undefined, 'text/plain');
+      expect(res.writeHead).not.toHaveBeenCalled();
+    });
+
+    it('should set only headers that are absent', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ getHeader: vi.fn(() => 'existing') });
+      (adapter as any).setHeaderIfNotExists(res, 'X-Test', 'value');
+      expect(res.setHeader).not.toHaveBeenCalled();
+      (adapter as any).setHeaderIfNotExists(res, 'X-Test', undefined);
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('should join array header values', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ getHeader: vi.fn(() => undefined) });
+      (adapter as any).setHeaderIfNotExists(res, 'X-Test', ['a', 'b']);
+      expect(res.setHeader).toHaveBeenCalledWith('X-Test', 'a,b');
+    });
+
+    it('should keep an existing Transfer-Encoding out of stream headers', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ hasHeader: vi.fn(() => true) });
+      const streamable = {
+        getHeaders: () => ({ type: 'text/plain', disposition: 'inline', length: 3 }),
+      };
+      (adapter as any).applyStreamHeaders(res, streamable);
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/plain');
+      expect(res.setHeader).not.toHaveBeenCalledWith('Content-Length', 3);
+    });
+
+    it('should set stream headers when no Transfer-Encoding exists', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ getHeader: vi.fn(() => undefined) });
+      const streamable = {
+        getHeaders: () => ({ type: 'text/plain', disposition: 'inline', length: 3 }),
+      };
+      (adapter as any).applyStreamHeaders(res, streamable);
+      expect(res.setHeader).toHaveBeenCalledWith('Content-Length', 3);
+    });
+  });
+
+  describe('additional version filters', () => {
+    it('should match an array version against a string extraction', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      const filter = adapter.applyVersionFilter(handler, ['1', '2'], {
+        type: VersioningType.CUSTOM,
+        extractor: () => '2',
+      } as any);
+      filter({}, {}, vi.fn());
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('should pass on for an array version and string extraction mismatch', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), ['1'], {
+        type: VersioningType.CUSTOM,
+        extractor: () => '3',
+      } as any);
+      filter({}, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should pass on for a version that is neither a string nor an array', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), 1 as any, {
+        type: VersioningType.CUSTOM,
+        extractor: () => '1',
+      } as any);
+      filter({}, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should match a string version against array extraction', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      const filter = adapter.applyVersionFilter(handler, '1', {
+        type: VersioningType.CUSTOM,
+        extractor: () => ['1'],
+      } as any);
+      filter({}, {}, vi.fn());
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('should pass on for a string version and array extraction mismatch', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), '1', {
+        type: VersioningType.CUSTOM,
+        extractor: () => ['2'],
+      } as any);
+      filter({}, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should match an array media type version', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      const filter = adapter.applyVersionFilter(handler, ['2', '3'], {
+        type: VersioningType.MEDIA_TYPE,
+        key: 'v=',
+      } as any);
+      filter({ headers: { accept: 'application/json;v=2' } }, {}, vi.fn());
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('should pass on for an array media type version mismatch', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), ['2'], {
+        type: VersioningType.MEDIA_TYPE,
+        key: 'v=',
+      } as any);
+      filter({ headers: { accept: 'application/json;v=3' } }, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should pass on for a string media type version mismatch', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), '2', {
+        type: VersioningType.MEDIA_TYPE,
+        key: 'v=',
+      } as any);
+      filter({ headers: { accept: 'application/json;v=3' } }, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should match an array header version', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      const filter = adapter.applyVersionFilter(handler, ['2'], {
+        type: VersioningType.HEADER,
+        header: 'X-Version',
+      } as any);
+      filter({ headers: { 'x-version': '2' } }, {}, vi.fn());
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('should pass on for an array header version mismatch', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), ['2'], {
+        type: VersioningType.HEADER,
+        header: 'X-Version',
+      } as any);
+      filter({ headers: { 'x-version': '3' } }, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should pass on for a string header version mismatch', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), '2', {
+        type: VersioningType.HEADER,
+        header: 'X-Version',
+      } as any);
+      filter({ headers: { 'x-version': '3' } }, {}, next);
+      expect(next).toHaveBeenCalled();
     });
   });
 });

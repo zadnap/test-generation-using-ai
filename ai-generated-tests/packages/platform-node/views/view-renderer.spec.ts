@@ -205,6 +205,36 @@ describe('ViewRenderer', () => {
     });
   });
 
+  describe('dynamic engine imports', () => {
+    it('should use the default export of an imported engine', async () => {
+      const dir = makeDir();
+      writeFileSync(join(dir, 'page.ejs'), 'x');
+      const engine = join(dir, 'engine-default.mjs');
+      writeFileSync(
+        engine,
+        "export default { __express(_file, _data, cb) { cb(null, 'default'); } };",
+      );
+      const renderer = new ViewRenderer();
+      renderer.setEngine(engine);
+      renderer.setBaseViewsDir(dir);
+      expect(await renderer.render('page.ejs')).toBe('default');
+    });
+
+    it('should use the namespace of an imported engine without default', async () => {
+      const dir = makeDir();
+      writeFileSync(join(dir, 'page.ejs'), 'x');
+      const engine = join(dir, 'engine-named.mjs');
+      writeFileSync(
+        engine,
+        "export function __express(_file, _data, cb) { cb(null, 'named'); }",
+      );
+      const renderer = new ViewRenderer();
+      renderer.setEngine(engine);
+      renderer.setBaseViewsDir(dir);
+      expect(await renderer.render('page.ejs')).toBe('named');
+    });
+  });
+
   describe('resolveFile', () => {
     it('should append the engine extension when the view has none', async () => {
       const dir = makeDir();

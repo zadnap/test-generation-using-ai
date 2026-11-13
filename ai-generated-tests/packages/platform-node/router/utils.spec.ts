@@ -23,6 +23,7 @@ describe('loosen', () => {
     ['/users/', '/users'],
     ['/users//', '/users'],
     ['/users', '/users'],
+    ['users', 'users'],
     ['/', '/'],
     ['', ''],
     ['///', ''],
@@ -41,6 +42,7 @@ describe('getLiteralPrefix', () => {
     ['{/:lang}/users', ''],
     ['/:id', '/'],
     ['/users', '/users'],
+    ['users', 'users'],
     ['/', '/'],
     ['', ''],
     ['/a\\:b/:id', '/a:b/'],
@@ -94,6 +96,7 @@ describe('getPrefixSkips', () => {
 describe('getRoutingPath', () => {
   it.each([
     ['/users', '/users'],
+    ['users', 'users'],
     ['/users?id=1&sort=asc', '/users'],
     ['/%61dmin', '/admin'],
     ['/files/a%2Fb', '/files/a%2Fb'],

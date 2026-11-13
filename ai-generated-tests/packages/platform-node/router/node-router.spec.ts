@@ -4,7 +4,10 @@ import {
   NodeRouter,
   PARAM_TOO_LONG_KEY,
 } from '../../../../packages/platform-node/router/node-router.js';
-import { NodeRequest } from '../../../../packages/platform-node/adapters/node-request.js';
+import {
+  NodeRequest,
+  NodeResponse,
+} from '../../../../packages/platform-node/adapters/node-request.js';
 
 const makeReq = (url = '/', method = 'GET') => ({
   url,
@@ -185,6 +188,263 @@ describe('NodeRouter', () => {
       router.use(namedMiddleware);
       expect(router.hasMiddleware('namedMiddleware')).toBe(true);
       expect(router.hasMiddleware('other')).toBe(false);
+    });
+  });
+
+  describe('additional dispatch, mount and promise branches', () => {
+    it('should reuse the original URL, base URL and params', () => {
+      const { router } = setup();
+      const handler = vi.fn();
+      router.get('/x', handler);
+      const req: any = makeReq('/x');
+      req.originalUrl = '/old';
+      req.baseUrl = '/base';
+      req.params = { id: '1' };
+      router.handle(req as any, makeRes());
+      expect(handler).toHaveBeenCalled();
+      expect([req.originalUrl, req.baseUrl]).toEqual(['/old', '/base']);
+    });
+
+    it('should accept a real NodeRequest and NodeResponse', () => {
+      const { router } = setup();
+      const handler = vi.fn();
+      router.get('/x', handler);
+      const req = makeReq('/x');
+      Object.setPrototypeOf(req, NodeRequest.prototype);
+      const res = Object.create(NodeResponse.prototype);
+      router.handle(req as any, res);
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('should mount a nested array of paths', () => {
+      const { router } = setup();
+      const handler = vi.fn((_req, _res, next) => next());
+      router.use([['/a', '/b']], handler);
+      router.handle(makeReq('/b/x') as any, makeRes());
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('should decode a parameter in a mount path', () => {
+      const { router } = setup();
+      let seen: any;
+      router.use('/u/:id', (req: any, _res: any, next: any) => {
+        seen = req.params;
+        next();
+      });
+      router.handle(makeReq('/u/a%20b/x') as any, makeRes());
+      expect(seen).toEqual({ id: 'a b' });
+    });
+
+    it('should add a slash after mounting the whole URL', () => {
+      const { router } = setup();
+      let seen: any;
+      router.use('/foo', (req: any, _res: any, next: any) => {
+        seen = req.url;
+        next();
+      });
+      router.handle(makeReq('/foo') as any, makeRes());
+      expect(seen).toBe('/');
+    });
+
+    it('should strip a trailing slash from a mount path', () => {
+      const { router } = setup();
+      let seen: any;
+      router.use('/foo/', (req: any, _res: any, next: any) => {
+        seen = { url: req.url, baseUrl: req.baseUrl };
+        next();
+      });
+      router.handle(makeReq('/foo/bar') as any, makeRes());
+      expect(seen).toEqual({ url: '/bar', baseUrl: '/foo' });
+    });
+
+    it('should let HEAD use a GET exact middleware', () => {
+      const { router } = setup();
+      const handler = vi.fn((_req, _res, next) => next());
+      router.useExact('GET', '/exact', handler);
+      router.handle(makeReq('/exact', 'HEAD') as any, makeRes());
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('should skip middleware layers sharing a prefix', () => {
+      const { router } = setup();
+      router.useExact('GET', '/api/users/one', (_req, _res, next) => next());
+      router.useExact('GET', '/api/users/two', (_req, _res, next) => next());
+      const other = vi.fn((_req, _res, next) => next());
+      router.useExact('GET', '/other', other);
+      router.handle(makeReq('/other') as any, makeRes());
+      expect(other).toHaveBeenCalled();
+    });
+
+    it('should forward a rejected promise', async () => {
+      const { router } = setup();
+      const errorHandler = vi.fn((_err, _req, _res, next) => next());
+      router.get('/x', async () => {
+        throw new Error('async');
+      });
+      router.use(errorHandler);
+      router.handle(makeReq('/x') as any, makeRes());
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(errorHandler).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.anything(),
+        expect.anything(),
+        expect.any(Function),
+      );
+    });
+
+    it('should create an error for a rejected promise without a reason', async () => {
+      const { router } = setup();
+      const errorHandler = vi.fn((_err, _req, _res, next) => next());
+      router.get('/x', () => Promise.reject());
+      router.use(errorHandler);
+      router.handle(makeReq('/x') as any, makeRes());
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(errorHandler).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.anything(),
+        expect.anything(),
+        expect.any(Function),
+      );
+    });
+
+    it('should create an error for a thrown falsy value', () => {
+      const { router } = setup();
+      const errorHandler = vi.fn((_err, _req, _res, next) => next());
+      router.get('/x', () => {
+        throw 0;
+      });
+      router.use(errorHandler);
+      router.handle(makeReq('/x') as any, makeRes());
+      expect(errorHandler).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.anything(),
+        expect.anything(),
+        expect.any(Function),
+      );
+    });
+
+    it('should stop route handlers when next receives an error', () => {
+      const { router } = setup();
+      const second = vi.fn();
+      const errorHandler = vi.fn((_err, _req, _res, next) => next());
+      router.get(
+        '/x',
+        (_req: any, _res: any, next: any) => next(new Error('boom')),
+        second,
+      );
+      router.use(errorHandler);
+      router.handle(makeReq('/x') as any, makeRes());
+      expect(second).not.toHaveBeenCalled();
+      expect(errorHandler).toHaveBeenCalled();
+    });
+
+    it('should use distinct parameter names per handler', () => {
+      const { router } = setup();
+      const seen: any[] = [];
+      router.get('/u/:id', (req: any, _res: any, next: any) => {
+        seen.push(req.params);
+        next();
+      });
+      router.get('/u/:name', (req: any, _res: any, next: any) => {
+        seen.push(req.params);
+        next();
+      });
+      router.handle(makeReq('/u/7') as any, makeRes());
+      expect(seen).toEqual([{ id: '7' }, { name: '7' }]);
+    });
+
+    it('should fall through to another route after the handlers pass', () => {
+      const { router } = setup();
+      const seen: any[] = [];
+      router.get('/u/:id', (_req: any, _res: any, next: any) => next());
+      router.get('/u/:value', (req: any) => seen.push(req.params));
+      router.handle(makeReq('/u/7') as any, makeRes());
+      expect(seen).toEqual([{ value: '7' }]);
+    });
+
+    it('should decode a percent sign that is left after decoding', () => {
+      const { router, finalHandler } = setup();
+      let seen: any;
+      router.use('/u/:id', (req: any, _res: any, next: any) => {
+        seen = req.params;
+        next();
+      });
+      router.handle(makeReq('/u/%25x') as any, makeRes());
+      expect(seen).toEqual({ id: '%x' });
+      expect(finalHandler).toHaveBeenCalledWith(
+        undefined,
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('should fall through to a different route shape', () => {
+      const { router } = setup();
+      const seen: any[] = [];
+      router.get('/u/:id', (_req: any, _res: any, next: any) => next());
+      router.get('/u/*rest', (req: any) => seen.push(req.params));
+      router.handle(makeReq('/u/7') as any, makeRes());
+      expect(seen).toEqual([{ rest: ['7'] }]);
+    });
+
+    it('should not report a malformed target twice', () => {
+      const { router } = setup();
+      const rejected = vi.fn();
+      const errorHandler = vi.fn((_err, _req, _res, next) => next());
+      router.onRejectedTarget = rejected;
+      router.use((req: any, _res: any, next: any) => {
+        req.url = '/bad#/';
+        next(new Error('boom'));
+      });
+      router.use(errorHandler);
+      router.handle(makeReq('/x') as any, makeRes());
+      expect(rejected).not.toHaveBeenCalled();
+      expect(errorHandler).toHaveBeenCalled();
+    });
+
+    it('should skip route tables while handling an error', () => {
+      const { router } = setup();
+      const errorHandler = vi.fn((_err, _req, _res, next) => next());
+      router.get('/x', (_req: any, _res: any, next: any) =>
+        next(new Error('boom')),
+      );
+      router.use((_req, _res, next) => next());
+      router.get('/y', vi.fn());
+      router.use(errorHandler);
+      router.handle(makeReq('/x') as any, makeRes());
+      expect(errorHandler).toHaveBeenCalled();
+    });
+
+    it('should skip nested middleware prefixes', () => {
+      const { router } = setup();
+      router.useExact('GET', '/api', (_req, _res, next) => next());
+      router.useExact('GET', '/api/users', (_req, _res, next) => next());
+      router.useExact('GET', '/api/users/one', (_req, _res, next) => next());
+      const other = vi.fn((_req, _res, next) => next());
+      router.useExact('GET', '/other', other);
+      router.handle(makeReq('/other') as any, makeRes());
+      expect(other).toHaveBeenCalled();
+    });
+
+    it('should strip a trailing slash from a parameterized mount', () => {
+      const { router } = setup();
+      let seen: any;
+      router.use('/foo/:id/', (req: any, _res: any, next: any) => {
+        seen = { url: req.url, baseUrl: req.baseUrl };
+        next();
+      });
+      router.handle(makeReq('/foo/x/bar') as any, makeRes());
+      expect(seen).toEqual({ url: '/bar', baseUrl: '/foo/x' });
+    });
+
+    it('should continue after a route table miss', () => {
+      const { router, finalHandler } = setup();
+      router.get('/missing', () => {});
+      router.use((_req, _res, next) => next());
+      router.handle(makeReq('/other') as any, makeRes());
+      expect(finalHandler).toHaveBeenCalled();
     });
   });
 

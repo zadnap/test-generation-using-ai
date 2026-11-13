@@ -1,4 +1,9 @@
 import { Readable } from 'stream';
+import {
+  brotliCompressSync,
+  deflateSync,
+  gzipSync,
+} from 'zlib';
 import { describe, expect, it, vi } from 'vitest';
 import {
   json,
@@ -300,6 +305,297 @@ describe('body-parser', () => {
         urlencoded({ defaultCharset: 'latin1' as any }),
       ).toThrow(TypeError);
     });
+  });
+
+  describe('additional JSON and reader branches', () => {
+    it('should validate non-string, non-number limit values', () => {
+      expect(() => json({ limit: {} as any })).toThrow(TypeError);
+      expect(() => json({ limit: '1' })).not.toThrow();
+      expect(() => json({ limit: '1mb' })).not.toThrow();
+    });
+
+    it('should skip a body whose request has no content type', async () => {
+      const { error, req } = await run(json(), {
+        body: '{"a":1}',
+        headers: { 'content-type': undefined as any },
+      });
+      expect(error).toBeUndefined();
+      expect(req.body).toBeUndefined();
+    });
+
+    it('should reuse a cached charset for the same header', async () => {
+      const parser = text();
+      const contentType = 'text/plain; charset=utf-8';
+      await run(parser, { body: 'a', contentType });
+      const { req } = await run(parser, { body: 'b', contentType });
+      expect(req.body).toBe('b');
+    });
+
+    it('should strip a UTF-8 byte order mark', async () => {
+      const body = Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from('{"a":1}'),
+      ]);
+      const { req } = await run(json(), {
+        body,
+        contentType: JSON_HEADERS,
+      });
+      expect(req.body).toEqual({ a: 1 });
+    });
+
+    it.each([
+      ['gzip', gzipSync(Buffer.from('{"a":1}'))],
+      ['x-gzip', gzipSync(Buffer.from('{"a":1}'))],
+      ['deflate', deflateSync(Buffer.from('{"a":1}'))],
+      ['br', brotliCompressSync(Buffer.from('{"a":1}'))],
+    ])('should inflate a %s body', async (encoding, body) => {
+      const { error, req } = await run(json(), {
+        body,
+        contentType: JSON_HEADERS,
+        headers: { 'content-encoding': encoding },
+      });
+      expect(error).toBeUndefined();
+      expect(req.body).toEqual({ a: 1 });
+    });
+
+    it('should report a decompression stream error', async () => {
+      const { error } = await run(json(), {
+        body: Buffer.from('not-gzip'),
+        contentType: JSON_HEADERS,
+        headers: { 'content-encoding': 'gzip' },
+      });
+      expect(error).toMatchObject({ status: 400, type: 'stream.error' });
+    });
+
+    it('should wrap a non-Error verify failure', async () => {
+      const { error } = await run(
+        json({
+          verify: () => {
+            throw 'nope';
+          },
+        }),
+        { body: '{}', contentType: JSON_HEADERS },
+      );
+      expect(error).toMatchObject({
+        status: 403,
+        type: 'entity.verify.failed',
+        message: 'nope',
+      });
+    });
+
+    it('should wrap an undefined verify failure', async () => {
+      const { error } = await run(
+        json({
+          verify: () => {
+            throw undefined;
+          },
+        }),
+        { body: '{}', contentType: JSON_HEADERS },
+      );
+      expect(error).toMatchObject({
+        status: 403,
+        message: 'verify failed',
+      });
+    });
+
+    it('should force a 403 for an invalid verify status', async () => {
+      const { error } = await run(
+        json({
+          verify: () => {
+            throw Object.assign(new Error('bad'), { status: 200 });
+          },
+        }),
+        { body: '{}', contentType: JSON_HEADERS },
+      );
+      expect(error).toMatchObject({ status: 403 });
+    });
+
+    it('should report an aborted request on stream error', async () => {
+      const parser = json();
+      const req: any = new Readable({ read() {} });
+      req.headers = {
+        'content-type': JSON_HEADERS,
+        'content-length': '10',
+      };
+      req.complete = false;
+      req.destroyed = false;
+      const error = await new Promise<any>(resolve => {
+        parser(req, {}, resolve);
+        req.destroyed = true;
+        req.emit('error', new Error('socket'));
+      });
+      expect(error).toMatchObject({ status: 400, type: 'request.aborted' });
+    });
+
+    it('should report a request aborted on close', async () => {
+      const parser = json();
+      const req: any = new Readable({ read() {} });
+      req.headers = {
+        'content-type': JSON_HEADERS,
+        'content-length': '10',
+      };
+      req.complete = false;
+      req.destroyed = false;
+      const error = await new Promise<any>(resolve => {
+        parser(req, {}, resolve);
+        req.destroyed = true;
+        req.emit('close');
+      });
+      expect(error).toMatchObject({ status: 400, type: 'request.aborted' });
+    });
+
+    it('should ignore a close event after the body completed', async () => {
+      const parser = json();
+      const req: any = Readable.from([Buffer.from('{}')]);
+      req.headers = {
+        'content-type': JSON_HEADERS,
+        'content-length': '2',
+      };
+      req.complete = true;
+      const next = vi.fn();
+      parser(req, {}, next);
+      await new Promise(resolve => setImmediate(resolve));
+      req.emit('close');
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('additional decoding branches', () => {
+    it.each([
+      ['us-ascii', 'abc'],
+      ['ascii', 'abc'],
+      ['latin1', '\u00e9'],
+      ['iso-8859-1', '\u00e9'],
+    ])('should decode a %s text body', async (charset, value) => {
+      const body = Buffer.from(value, 'latin1');
+      const { req } = await run(text(), {
+        body,
+        contentType: `text/plain; charset=${charset}`,
+      });
+      expect(req.body).toBe(value);
+    });
+
+    it('should decode utf-16le with a byte order mark', async () => {
+      const body = Buffer.from([0xff, 0xfe, 0x61, 0x00]);
+      const { req } = await run(text(), {
+        body,
+        contentType: 'text/plain; charset=utf-16',
+      });
+      expect(req.body).toBe('a');
+    });
+
+    it('should decode utf-16be with a byte order mark', async () => {
+      const body = Buffer.from([0xfe, 0xff, 0x00, 0x61]);
+      const { req } = await run(text(), {
+        body,
+        contentType: 'text/plain; charset=utf-16',
+      });
+      expect(req.body).toBe('a');
+    });
+
+    it('should detect little-endian utf-16 without a byte order mark', async () => {
+      const body = Buffer.from([0x61, 0x00, 0x62, 0x00]);
+      const { req } = await run(text(), {
+        body,
+        contentType: 'text/plain; charset=utf16',
+      });
+      expect(req.body).toBe('ab');
+    });
+
+    it('should detect big-endian utf-16 without a byte order mark', async () => {
+      const body = Buffer.from([0x00, 0x61, 0x00, 0x62]);
+      const { req } = await run(text(), {
+        body,
+        contentType: 'text/plain; charset=utf-16',
+      });
+      expect(req.body).toBe('ab');
+    });
+
+    it('should decode a short utf-16 body', async () => {
+      const { error } = await run(text(), {
+        body: Buffer.from([0x61]),
+        contentType: 'text/plain; charset=utf-16',
+      });
+      expect(error).toBeUndefined();
+    });
+
+    it('should decode windows-1252 high characters', async () => {
+      const { req } = await run(text(), {
+        body: Buffer.from([0x80]),
+        contentType: 'text/plain; charset=windows-1252',
+      });
+      expect(req.body).toBe('\u20ac');
+    });
+
+    it('should decode another charset through TextDecoder', async () => {
+      const { req } = await run(text(), {
+        body: Buffer.from([0x61, 0x00]),
+        contentType: 'text/plain; charset=utf-16le',
+      });
+      expect(req.body).toBe('a');
+    });
+  });
+
+  describe('additional urlencoded branches', () => {
+    it('should skip poisoning scans when both actions ignore', async () => {
+      const { error, req } = await run(
+        urlencoded({
+          extended: true,
+          onProtoPoisoning: 'ignore',
+          onConstructorPoisoning: 'ignore',
+        }),
+        {
+          body: 'constructor[prototype][x]=1',
+          contentType: FORM_HEADERS,
+        },
+      );
+      expect(error).toBeUndefined();
+      expect(req.body).toEqual({ constructor: { prototype: { x: '1' } } });
+    });
+
+    it('should accept an infinite parameter limit', async () => {
+      const { error } = await run(urlencoded({ parameterLimit: Infinity }), {
+        body: 'a=1&b=2',
+        contentType: FORM_HEADERS,
+      });
+      expect(error).toBeUndefined();
+    });
+
+    it('should accept an infinite depth', async () => {
+      const { error } = await run(
+        urlencoded({ extended: true, depth: Infinity }),
+        { body: 'a[b]=1', contentType: FORM_HEADERS },
+      );
+      expect(error).toBeUndefined();
+    });
+
+    it('should decode encoded keys and values', async () => {
+      const { req } = await run(urlencoded(), {
+        body: 'a+b=c%20d',
+        contentType: FORM_HEADERS,
+      });
+      expect(req.body).toEqual({ 'a b': 'c d' });
+    });
+
+    it('should use iso-8859-1 as the default charset', async () => {
+      const { req } = await run(
+        urlencoded({ defaultCharset: 'iso-8859-1' }),
+        {
+          body: Buffer.from('a=%E9', 'latin1'),
+          contentType: FORM_HEADERS,
+        },
+      );
+      expect(req.body).toEqual({ a: '\u00e9' });
+    });
+
+    it('should reject an unsupported charset', async () => {
+      const { error } = await run(urlencoded(), {
+        body: 'a=1',
+        contentType: `${FORM_HEADERS}; charset=latin1`,
+      });
+      expect(error).toMatchObject({ status: 415, type: 'charset.unsupported' });
+    });
+
   });
 
   describe('text and raw', () => {

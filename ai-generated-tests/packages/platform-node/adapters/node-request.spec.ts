@@ -1,11 +1,70 @@
+import { createServer, get } from 'node:http';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   endWithoutBody,
   NodeRequest,
   NodeResponse,
+  ROUTE_ERROR_HANDLER,
   SHUTTING_DOWN,
   toBytes,
 } from '../../../../packages/platform-node/adapters/node-request.js';
+
+
+const tempDirs: string[] = [];
+function tempFile(
+  name: string,
+  content = 'hello',
+): { dir: string; file: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'node-request-'));
+  tempDirs.push(dir);
+  const file = join(dir, name);
+  writeFileSync(file, content);
+  return { dir, file };
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+async function sendFileViaServer(
+  file: string,
+  options?: any,
+  configure?: (req: any, res: any) => void,
+  withCallback = true,
+) {
+  const result: { err?: any; handled?: any } = {};
+  const server = createServer((req, res) => {
+    Object.setPrototypeOf(res, NodeResponse.prototype);
+    (res as any).req = req;
+    configure?.(req, res);
+    const done = (err?: Error) => {
+      result.err = err;
+      if (!res.writableEnded) {
+        res.statusCode = err ? 500 : 200;
+        res.end('done');
+      }
+    };
+    if (!withCallback) {
+      (res as any).sendFile(file, options ?? undefined);
+    } else if (options === undefined) {
+      (res as any).sendFile(file, done);
+    } else {
+      (res as any).sendFile(file, options, done);
+    }
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as any;
+  const response = await fetch(`http://127.0.0.1:${port}/`);
+  const body = await response.text();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  return { response, body, result };
+}
 
 const makeReq = (init: any = {}) =>
   Object.assign(Object.create(NodeRequest.prototype), {
@@ -413,6 +472,23 @@ describe('NodeResponse', () => {
       expect(res.end).toHaveBeenCalledWith(body);
     });
 
+    it('should keep an existing content type for bytes', () => {
+      const res = makeRes();
+      res.setHeader('Content-Type', 'image/png');
+      res.send(new Uint8Array([1]));
+      expect(res.getHeader('Content-Type')).toBe('image/png');
+    });
+
+    it('should not set Content-Length when Transfer-Encoding is present', () => {
+      const res = makeRes();
+      res.setHeader('Transfer-Encoding', 'chunked');
+      res.send('hello');
+      expect(res.setHeader).not.toHaveBeenCalledWith(
+        'Content-Length',
+        expect.anything(),
+      );
+    });
+
     it('should send a DataView as binary bytes', () => {
       const res = makeRes();
       const buffer = new ArrayBuffer(4);
@@ -552,6 +628,19 @@ describe('NodeResponse', () => {
       expect(res.getHeader('Vary')).toBe('accept');
     });
 
+    it('should set Vary when it is empty', () => {
+      const res = makeRes();
+      res.setHeader('Vary', '');
+      res.redirect('/next');
+      expect(res.getHeader('Vary')).toBe('Accept');
+    });
+
+    it('should send the numeric status when it has no reason phrase', () => {
+      const res = makeRes();
+      res.redirect(799, '/next');
+      expect(res.end.mock.calls[0][0]).toContain('799');
+    });
+
     it('should keep a wildcard Vary untouched', () => {
       const res = makeRes();
       res.setHeader('Vary', '*');
@@ -595,6 +684,142 @@ describe('NodeResponse', () => {
           expect.anything(),
         );
       }
+    });
+  });
+
+  describe('sendFile transfers', () => {
+    it('should serve an absolute file with a callback', async () => {
+      const { file } = tempFile('file.txt');
+      const { response, body, result } = await sendFileViaServer(file);
+      expect(body).toBe('hello');
+      expect(response.headers.get('content-type')).toContain('text/plain');
+      expect(result.err).toBeUndefined();
+    });
+
+    it('should serve an absolute file without a callback', async () => {
+      const { file } = tempFile('file.txt');
+      const { body } = await sendFileViaServer(
+        file,
+        undefined,
+        undefined,
+        false,
+      );
+      expect(body).toBe('hello');
+    });
+
+    it('should serve a file relative to root', async () => {
+      const { dir } = tempFile('file.txt');
+      const { body, result } = await sendFileViaServer('file.txt', {
+        root: dir,
+      });
+      expect(body).toBe('hello');
+      expect(result.err).toBeUndefined();
+    });
+
+    it('should pass options headers to the file stream', async () => {
+      const { file } = tempFile('file.txt');
+      const { response } = await sendFileViaServer(file, {
+        headers: { 'X-Test': 'yes' },
+      });
+      expect(response.headers.get('x-test')).toBe('yes');
+    });
+
+    it('should report a directory as EISDIR', async () => {
+      const { dir } = tempFile('file.txt');
+      const { result } = await sendFileViaServer(dir);
+      expect(result.err.code).toBe('EISDIR');
+    });
+
+    it('should report a missing file with its status', async () => {
+      const { dir } = tempFile('file.txt');
+      const { result } = await sendFileViaServer(join(dir, 'missing.txt'));
+      expect(result.err.status).toBe(404);
+    });
+
+    it('should answer a missing file without a callback', async () => {
+      const { dir } = tempFile('file.txt');
+      const { response, body } = await sendFileViaServer(
+        join(dir, 'missing.txt'),
+        undefined,
+        undefined,
+        false,
+      );
+      expect(response.status).toBe(404);
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(body).toBe('Not Found');
+    });
+
+    it('should answer a directory without a callback', async () => {
+      const { dir } = tempFile('file.txt');
+      const { response } = await sendFileViaServer(
+        dir,
+        undefined,
+        undefined,
+        false,
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it('should hand a file error to the route error handler', async () => {
+      const { dir } = tempFile('file.txt');
+      const handled: any[] = [];
+      const { response, body } = await sendFileViaServer(
+        join(dir, 'missing.txt'),
+        undefined,
+        (req, res) => {
+          (req.socket as any).server[ROUTE_ERROR_HANDLER] = (
+            err: any,
+            _req: any,
+            out: any,
+          ) => {
+            handled.push(err);
+            out.statusCode = err.status;
+            out.end('handled');
+          };
+        },
+        false,
+      );
+      expect(handled).toHaveLength(1);
+      expect(handled[0].status).toBe(404);
+      expect(body).toBe('handled');
+    });
+
+    it('should report a transfer aborted by the client', async () => {
+      const { file } = tempFile('big.txt', 'x'.repeat(4 * 1024 * 1024));
+      const result: { err?: any } = {};
+      const server = createServer((req, res) => {
+        Object.setPrototypeOf(res, NodeResponse.prototype);
+        (res as any).req = req;
+        (res as any).sendFile(file, (err?: Error) => {
+          result.err = err;
+        });
+      });
+      await new Promise<void>(resolve =>
+        server.listen(0, '127.0.0.1', resolve),
+      );
+      const { port } = server.address() as any;
+      await new Promise<void>(resolve => {
+        const request = get(
+          { host: '127.0.0.1', port, path: '/' },
+          response => {
+            response.once('data', () => {
+              request.destroy();
+              resolve();
+            });
+          },
+        );
+        request.on('error', () => resolve());
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      expect(['ECONNABORTED', 'EPIPE']).toContain(result.err.code);
+    });
+
+    it('should accept null options with a callback', async () => {
+      const { file } = tempFile('file.txt');
+      const { body, result } = await sendFileViaServer(file, null);
+      expect(body).toBe('hello');
+      expect(result.err).toBeUndefined();
     });
   });
 });
