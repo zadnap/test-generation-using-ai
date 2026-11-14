@@ -1,0 +1,35 @@
+{
+  "policies": [
+    {
+      "action": "tool.use",
+      "resource": "read:*.test.*",
+      "effect": "deny"
+    },
+    {
+      "action": "tool.use",
+      "resource": "read:*.spec.*",
+      "effect": "deny"
+    },
+    {
+      "action": "tool.use",
+      "resource": "read:*__tests__/*",
+      "effect": "deny"
+    },
+
+    {
+      "action": "tool.use",
+      "resource": "read:ai-generated-tests-full/*.test.*",
+      "effect": "allow"
+    },
+    {
+      "action": "tool.use",
+      "resource": "read:ai-generated-tests-full/*.spec.*",
+      "effect": "allow"
+    },
+    {
+      "action": "tool.use",
+      "resource": "read:ai-generated-tests-full/*__tests__/*",
+      "effect": "allow"
+    }
+  ]
+}
