@@ -16,9 +16,8 @@ npm install
 6. Xem coverage hiện tại
 
 ```
-npx vitest run \
-  --config ai-generated-tests/vitest.config.mts \
-  --coverage
+npx --yes supercov -- npx vitest run --config ai-generated-tests/full-project/vitest.config.mts
+npx supercov runs latest
 ```
 
 7. Commit, nhớ viết thay đổi vào commit theo convention
