@@ -1,5 +1,6 @@
 import {
   Observable,
+  NEVER,
   of,
   Subject,
   throwError,
@@ -117,5 +118,29 @@ describe('mergeMapBounded', () => {
     );
 
     expect(result).toEqual([1, 2, 3]);
+  });
+
+  it('should re-check the subscriber state while the limit still allows work', () => {
+    const subject = new Subject<number>();
+    let subscription: any;
+    const values: number[] = [];
+
+    subscription = subject
+      .pipe(
+        mergeMapBounded(value => {
+          values.push(value);
+          if (value === 0) {
+            subject.next(1);
+            subscription.unsubscribe();
+          }
+          return NEVER;
+        }, 2),
+      )
+      .subscribe();
+
+    subject.next(0);
+
+    expect(values).toEqual([0]);
+    expect(subscription.closed).toBe(true);
   });
 });

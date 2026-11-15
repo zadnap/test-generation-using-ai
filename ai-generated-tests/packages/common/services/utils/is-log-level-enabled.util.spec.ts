@@ -7,6 +7,12 @@ describe('isLogLevelEnabled (C3)', () => {
     expect(isLogLevelEnabled('log', levels)).toBe(false);
   });
 
+  it('continues past the guard for a truthy non-array value', () => {
+    expect(isLogLevelEnabled('log', 'log' as any)).toBe(true);
+    // A non-array value has no known level values, so the highest stays -Infinity.
+    expect(isLogLevelEnabled('warn', 'log' as any)).toBe(true);
+  });
+
   it.each<[LogLevel, LogLevel[]]>([
     ['log', ['log']],
     ['debug', ['debug']],

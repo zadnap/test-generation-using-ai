@@ -808,6 +808,43 @@ describe('ServerGrpc error sendability', () => {
 
     expect(callback.mock.calls[0][0]).toBe(error);
   });
+
+  it('sends a function-valued error as it is', async () => {
+    const server = createServer();
+    const callback = vi.fn();
+    function thrown() {
+      return undefined;
+    }
+
+    await server.createUnaryServiceMethod(() => throwError(() => thrown))(
+      createCall() as any,
+      callback,
+    );
+
+    expect(callback.mock.calls[0][0]).toBe(thrown);
+  });
+
+  it('replaces a lone surrogate in the details only', async () => {
+    const server = createServer();
+    const callback = vi.fn();
+    const error = {
+      code: GrpcStatus.INVALID_ARGUMENT,
+      message: 'fine',
+      details: `bad '\ud83d'`,
+    };
+
+    await server.createUnaryServiceMethod(() => throwError(() => error))(
+      createCall() as any,
+      callback,
+    );
+
+    expect(callback).toHaveBeenCalledExactlyOnceWith({
+      code: GrpcStatus.INVALID_ARGUMENT,
+      message: 'fine',
+      details: `bad '\ufffd'`,
+      metadata: undefined,
+    });
+  });
 });
 
 /**
@@ -831,6 +868,19 @@ describe('ServerGrpc.createStreamServiceMethod', () => {
     expect(call.write.mock.calls).toEqual([['a'], ['b']]);
     expect(call.end).toHaveBeenCalledTimes(1);
     expect(call.emit).not.toHaveBeenCalled();
+  });
+
+  it('continues without pausing a call that cannot pause', async () => {
+    const server = createServer();
+    const call = createCall({ write: vi.fn(() => false), pause: undefined });
+
+    await server.createStreamServiceMethod(() => of('a'))(
+      call as any,
+      vi.fn(),
+    );
+
+    expect(call.write).toHaveBeenCalledWith('a');
+    expect(call.end).toHaveBeenCalledTimes(1);
   });
 
   it('fails the call with an internal error when the handler throws', async () => {
@@ -1680,6 +1730,25 @@ describe('ServerGrpc.loadProto', () => {
     const { pkg } = createFakeGrpcPackage();
     pkg.loadPackageDefinition = vi.fn(() => {
       throw 'not an error';
+    }) as any;
+    await installGrpcPackage(server, pkg);
+
+    expect(() => server.loadProto()).toThrow(InvalidProtoDefinitionException);
+    expect(loggerError).toHaveBeenCalledWith(
+      'The invalid .proto definition (file at "undefined" not found)',
+      expect.anything(),
+    );
+  });
+
+  it('falls back to its own message when a falsy value is thrown', async () => {
+    const server = createServer({
+      package: 'test',
+      packageDefinition: { test: {} },
+    });
+    const loggerError = silenceLogger(server);
+    const { pkg } = createFakeGrpcPackage();
+    pkg.loadPackageDefinition = vi.fn(() => {
+      throw 0;
     }) as any;
     await installGrpcPackage(server, pkg);
 

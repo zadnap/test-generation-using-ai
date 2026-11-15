@@ -121,6 +121,28 @@ describe('createRequestClass', () => {
       expect(req.hostname).toBe('local');
     });
 
+    it('should keep the base protocol without a forwarded protocol header', () => {
+      const RequestClass = createRequestClass({ trustProxy: true });
+      const req = makeReq(RequestClass, { headers: {} });
+
+      expect(req.protocol).toBe('http');
+    });
+
+    it('should ignore forwarded host and protocol from an untrusted proxy', () => {
+      const RequestClass = createRequestClass({ trustProxy: 'loopback' });
+      const req = makeReq(RequestClass, {
+        socket: { remoteAddress: '8.8.8.8', encrypted: false },
+        headers: {
+          host: 'local:3000',
+          'x-forwarded-host': 'example.com',
+          'x-forwarded-proto': 'https',
+        },
+      });
+
+      expect(req.hostname).toBe('local');
+      expect(req.protocol).toBe('http');
+    });
+
     it('should expose both trust proxy settings on app', () => {
       const RequestClass = createRequestClass({ trustProxy: true });
       const app = makeReq(RequestClass).app;

@@ -246,7 +246,11 @@ import { Injector } from '../../../../packages/core/injector/injector.js';
 import { NestContainer } from '../../../../packages/core/injector/container.js';
 import { InstanceWrapper } from '../../../../packages/core/injector/instance-wrapper.js';
 import { STATIC_CONTEXT } from '../../../../packages/core/injector/constants.js';
-import { PARAMTYPES_METADATA } from '@nestjs/common/internal';
+import {
+  OPTIONAL_DEPS_METADATA,
+  PARAMTYPES_METADATA,
+  SELF_DECLARED_DEPS_METADATA,
+} from '@nestjs/common/internal';
 import { INQUIRER } from '../../../../packages/core/injector/inquirer/inquirer-constants.js';
 import { inquirerProvider } from '../../../../packages/core/injector/inquirer/inquirer-providers.js';
 import { MiddlewareContainer } from '../../../../packages/core/middleware/container.js';
@@ -814,6 +818,379 @@ describe('Injector', () => {
         dependency.getInstanceByContextId(shared),
       );
       signal.complete();
+    });
+  });
+
+  describe('remaining decision coverage', () => {
+    it('should keep the context without a parent inquirer for a transient inquirer', async () => {
+      const container = new NestContainer();
+      const ref = (await container.addModule(class Root {}, []))!.moduleRef;
+      const injector: any = new Injector();
+      class Consumer {
+        constructor(_dependency: unknown) {}
+      }
+      Reflect.defineMetadata(
+        SELF_DECLARED_DEPS_METADATA,
+        [{ index: 0, param: 'dependency' }],
+        Consumer,
+      );
+      const wrapper = new InstanceWrapper({ metatype: Consumer });
+      const paramWrapper = new InstanceWrapper({
+        instance: {},
+        isResolved: true,
+      });
+      vi.spyOn(injector, 'resolveSingleParam').mockResolvedValue(paramWrapper);
+      const inquirer = new InstanceWrapper({ scope: Scope.TRANSIENT });
+      const context: any = { contextId: STATIC_CONTEXT, inquirer };
+      const callback = vi.fn();
+
+      await injector.resolveConstructorParams(
+        wrapper,
+        ref,
+        undefined,
+        callback,
+        context,
+      );
+
+      expect(callback).toHaveBeenCalled();
+      expect(context.rootInquirer).toBeUndefined();
+    });
+
+    it('should call the constructor callback for an unresolved forward reference', async () => {
+      const container = new NestContainer();
+      const ref = (await container.addModule(class Root {}, []))!.moduleRef;
+      const injector: any = new Injector();
+      class Consumer {
+        constructor(_dependency: unknown) {}
+      }
+      Reflect.defineMetadata(
+        SELF_DECLARED_DEPS_METADATA,
+        [{ index: 0, param: 'dependency' }],
+        Consumer,
+      );
+      const wrapper = new InstanceWrapper({ metatype: Consumer });
+      const paramWrapper = new InstanceWrapper({});
+      paramWrapper.forwardRef = true;
+      vi.spyOn(injector, 'resolveSingleParam').mockResolvedValue(paramWrapper);
+      const callback = vi.fn();
+
+      await injector.resolveConstructorParams(
+        wrapper,
+        ref,
+        undefined,
+        callback,
+        { contextId: STATIC_CONTEXT },
+      );
+
+      expect(callback).toHaveBeenCalled();
+    });
+
+    it('should stay out of the forward reference branch in a static context without inquirer', async () => {
+      const container = new NestContainer();
+      const ref = (await container.addModule(class Root {}, []))!.moduleRef;
+      const injector = new Injector();
+      const wrapper = new InstanceWrapper({ name: 'Forward' });
+      wrapper.forwardRef = true;
+
+      const result = await injector.resolveComponentHost(ref, wrapper, {
+        contextId: STATIC_CONTEXT,
+      });
+
+      expect(result).toBe(wrapper);
+      expect(
+        wrapper.getInstanceByContextId(STATIC_CONTEXT).isResolved,
+      ).toBeFalsy();
+    });
+
+    it('should load an unresolved forward reference in a static context with an inquirer', async () => {
+      const container = new NestContainer();
+      const ref = (await container.addModule(class Root {}, []))!.moduleRef;
+      const injector: any = new Injector();
+      const wrapper = new InstanceWrapper({ name: 'Forward' });
+      wrapper.forwardRef = true;
+      const inquirer = new InstanceWrapper({ name: 'Inquirer' });
+      const loadProvider = vi
+        .spyOn(injector, 'loadProvider')
+        .mockResolvedValue(undefined);
+
+      const result = await injector.resolveComponentHost(ref, wrapper, {
+        contextId: STATIC_CONTEXT,
+        inquirer,
+      });
+
+      expect(result).toBe(wrapper);
+      expect(loadProvider).toHaveBeenCalled();
+    });
+
+    it('should skip decorator metadata checks for a class without metadata', () => {
+      const injector: any = new Injector();
+      class Plain {
+        constructor(_dependency: unknown) {}
+      }
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      expect(
+        injector.getClassDependencies(
+          new InstanceWrapper({ metatype: Plain }),
+        ),
+      ).toEqual([[], []]);
+      expect(Logger.prototype.warn).not.toHaveBeenCalled();
+    });
+
+    it('should not warn when every constructor parameter has metadata', () => {
+      const injector: any = new Injector();
+      class Complete {
+        constructor(_first: unknown, _second: unknown) {}
+      }
+      Reflect.defineMetadata('custom:metadata', true, Complete);
+      Reflect.defineMetadata(
+        SELF_DECLARED_DEPS_METADATA,
+        [
+          { index: 0, param: 'first' },
+          { index: 1, param: 'second' },
+        ],
+        Complete,
+      );
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      expect(
+        injector.getClassDependencies(
+          new InstanceWrapper({ metatype: Complete }),
+        ),
+      ).toEqual([['first', 'second'], []]);
+      expect(Logger.prototype.warn).not.toHaveBeenCalled();
+    });
+
+    it('should not warn for a parameter marked optional', () => {
+      const injector: any = new Injector();
+      class Partial {
+        constructor(_dependency: unknown) {}
+      }
+      Reflect.defineMetadata('custom:metadata', true, Partial);
+      Reflect.defineMetadata(OPTIONAL_DEPS_METADATA, [0], Partial);
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      expect(
+        injector.getClassDependencies(
+          new InstanceWrapper({ metatype: Partial }),
+        ),
+      ).toEqual([[], [0]]);
+      expect(Logger.prototype.warn).not.toHaveBeenCalled();
+      expect(injector.classesWithoutMetadata.has(Partial)).toBe(false);
+    });
+
+    it('should report no optional parameters for a non-function type', () => {
+      const injector = new Injector();
+
+      expect(injector.reflectOptionalParams({} as any)).toEqual([]);
+    });
+
+    it('should read optional flags inherited from a parent constructor', () => {
+      const injector = new Injector();
+      class Parent {}
+      Reflect.defineMetadata(OPTIONAL_DEPS_METADATA, [0], Parent);
+      class OptionalChild extends Parent {}
+
+      expect(injector.reflectOptionalParams(OptionalChild)).toEqual([0]);
+    });
+
+    it('should read self declared flags inherited from a parent constructor', () => {
+      const injector = new Injector();
+      class Parent {}
+      Reflect.defineMetadata(
+        SELF_DECLARED_DEPS_METADATA,
+        [{ index: 0, param: 'dep' }],
+        Parent,
+      );
+      class SelfChild extends Parent {}
+
+      expect(injector.reflectOptionalParams(SelfChild)).toEqual([]);
+      expect(injector.reflectSelfParams(SelfChild)).toEqual([
+        { index: 0, param: 'dep' },
+      ]);
+    });
+
+    it('should return an object parameter that has no forward reference', () => {
+      const injector = new Injector();
+      const wrapper = new InstanceWrapper({ name: 'Consumer' });
+      const parameter = {};
+
+      expect(injector.resolveParamToken(wrapper, parameter as any)).toBe(
+        parameter,
+      );
+      expect(wrapper.forwardRef).toBeUndefined();
+    });
+
+    it('should look up an unnamed dependency in the parent modules', async () => {
+      const container = new NestContainer();
+      const ref = (await container.addModule(class Root {}, []))!.moduleRef;
+      const injector = new Injector();
+      const wrapper = new InstanceWrapper({
+        name: 'Consumer',
+        token: 'consumer',
+      });
+
+      await failure(() =>
+        injector.lookupComponent(
+          ref.providers,
+          ref,
+          {} as any,
+          wrapper,
+        ),
+      );
+    });
+
+    it('should skip an empty import while traversing modules', async () => {
+      const container = new NestContainer();
+      const ref = (await container.addModule(class Root {}, []))!.moduleRef;
+      (ref.imports as any).add(null);
+      const injector = new Injector();
+
+      expect(
+        await injector.lookupComponentInImports(
+          ref,
+          'missing',
+          new InstanceWrapper({ name: 'Consumer' }),
+        ),
+      ).toBeNull();
+    });
+
+    it('should traverse a module that exports a token it does not provide', async () => {
+      const container = new NestContainer();
+      class Token {}
+      const root = (await container.addModule(class Root {}, []))!.moduleRef;
+      const child = (await container.addModule(class Child {}, []))!.moduleRef;
+      root.addImport(child);
+      child.exports.add(Token);
+      const injector = new Injector();
+
+      expect(
+        await injector.lookupComponentInImports(
+          root,
+          Token,
+          new InstanceWrapper({ name: 'Consumer' }),
+        ),
+      ).toBeNull();
+    });
+
+    it('should leave a property unset when its component is missing', async () => {
+      const container = new NestContainer();
+      const ref = (await container.addModule(class Root {}, []))!.moduleRef;
+      const injector: any = new Injector();
+      class Consumer {
+        @Inject('dependency')
+        value: unknown;
+      }
+      vi.spyOn(injector, 'resolveSingleParam').mockResolvedValue(
+        new InstanceWrapper({ instance: {}, isResolved: true }),
+      );
+      vi.spyOn(injector, 'resolveComponentHost').mockResolvedValue(undefined);
+
+      const result = await injector.resolveProperties(
+        new InstanceWrapper({ metatype: Consumer }),
+        ref,
+      );
+
+      expect(result).toMatchObject([
+        {
+          key: 'value',
+          name: 'dependency',
+          isOptional: false,
+          instance: undefined,
+        },
+      ]);
+    });
+
+    it('should use the settlement signal of a transient inquirer', () => {
+      const injector: any = new Injector();
+      const insertRef = vi.fn();
+      const inquirer = new InstanceWrapper({ scope: Scope.TRANSIENT });
+      inquirer.settlementSignal = { insertRef } as any;
+      const wrapper = new InstanceWrapper({ name: 'Dependency' });
+
+      injector.insertSettlementRef(
+        { contextId: STATIC_CONTEXT, inquirer },
+        wrapper,
+        {},
+      );
+
+      expect(insertRef).toHaveBeenCalledTimes(1);
+    });
+
+    it('should consider a transient provider in a request context in context', () => {
+      const injector: any = new Injector();
+      const wrapper = new InstanceWrapper({ scope: Scope.TRANSIENT });
+      const inquirer = new InstanceWrapper({ scope: Scope.REQUEST });
+
+      expect(
+        injector.isInContext(wrapper, {
+          contextId: { id: 1 },
+          inquirer,
+        }),
+      ).toBe(true);
+    });
+
+    it('should skip a skipped provider that is not a function', async () => {
+      const container = new NestContainer();
+      const ref = (await container.addModule(class Root {}, []))!.moduleRef;
+      const injector: any = new Injector();
+      const wrapper = new InstanceWrapper({
+        name: 'NotAFunction',
+        metatype: 'not-a-function' as any,
+      });
+
+      await expect(
+        injector.lookupSkippedProviderDependencies(wrapper, ref),
+      ).resolves.toBeUndefined();
+    });
+
+    it('should fall back to the inquirer when there is no parent inquirer', () => {
+      const injector: any = new Injector();
+      const dependency = new InstanceWrapper({ scope: Scope.TRANSIENT });
+      const inquirer = new InstanceWrapper({ scope: Scope.TRANSIENT });
+      const context = { contextId: STATIC_CONTEXT, inquirer };
+
+      expect(
+        injector.getEffectiveInquirer(dependency, context, undefined),
+      ).toBe(inquirer);
+      expect(
+        injector.getEffectiveInquirerId(dependency, context, undefined),
+      ).toBe(inquirer.id);
+      expect(
+        injector.getStaticTransientResolutionContext(context, undefined),
+      ).toBe(context);
+      expect(
+        injector.getEffectiveInquirer(undefined, context, undefined),
+      ).toBe(inquirer);
+      expect(
+        injector.getEffectiveInquirer(dependency, {
+          contextId: STATIC_CONTEXT,
+          inquirer: undefined,
+        }, undefined),
+      ).toBeUndefined();
+    });
+
+    it('should treat a wrapper without metatype as having complete properties', () => {
+      const injector: any = new Injector();
+
+      expect(
+        injector.hasCompletePropertiesMetadata(new InstanceWrapper(), [
+          { key: 'value' },
+        ]),
+      ).toBe(true);
+    });
+
+    it('should record a symbol property dependency', () => {
+      const injector: any = new Injector();
+      const host = new InstanceWrapper({ name: 'Host' });
+      const dependency = new InstanceWrapper({ name: 'Dependency' });
+      const key = Symbol('property');
+
+      injector.addDependencyMetadata(key, host, dependency);
+
+      expect(host.getPropertiesMetadata()).toEqual([
+        { key, wrapper: dependency },
+      ]);
     });
   });
 });

@@ -171,4 +171,8 @@ describe('getRawPrefixEnd', () => {
   it('should handle an absolute-form target with no scheme separator', () => {
     expect(getRawPrefixEnd('not-a-url', '/x')).toBe(9);
   });
+
+  it('should prefer the path over a later query of an absolute-form target', () => {
+    expect(getRawPrefixEnd('http://host/api/users?x=1', '/api')).toBe(15);
+  });
 });

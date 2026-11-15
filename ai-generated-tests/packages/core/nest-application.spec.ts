@@ -535,6 +535,25 @@ describe('NestApplication additional configuration paths', () => {
     },
   );
 
+  it('skips CORS when there are no application options', async () => {
+    const { app, http } = await isolatedApplication();
+    (app as any).appOptions = undefined;
+    app.applyOptions();
+    expect(http.enableCors).not.toHaveBeenCalled();
+  });
+
+  it('does not disable X-Powered-By when the headers keep it', async () => {
+    const disable = vi.fn();
+    const { app } = await isolatedApplication({}, { disable });
+    app.useSecurityHeaders({ xPoweredBy: false });
+    expect(disable).not.toHaveBeenCalled();
+  });
+
+  it('throws for a null address after the guard', async () => {
+    const { app } = await isolatedApplication();
+    expect(() => (app as any).formatAddress(null)).toThrow();
+  });
+
   // registerRouter decisions 1-8: order-sensitive/insensitive adapters, sorting,
   // duplicate and shadow diagnostics, skipped duplicate and retained route.
   it.each([

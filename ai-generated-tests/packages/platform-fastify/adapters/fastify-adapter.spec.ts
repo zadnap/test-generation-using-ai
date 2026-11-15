@@ -2238,3 +2238,135 @@ describe('registerWithPrefix and misc', () => {
     expect(response.statusCode).toBe(200);
   });
 });
+
+describe('remaining decision coverage', () => {
+  const registerRoute = (adapter: FastifyAdapter) => {
+    adapter.get('/', () => 'ok');
+    return adapter;
+  };
+
+  it('should not build an error body for a successful status', () => {
+    const adapter = createAdapter();
+    const reply = replyStub({
+      getHeader: vi.fn(() => 'text/csv'),
+      statusCode: 200,
+    });
+    adapter.reply(reply, { errors: [] }, 200);
+    expect(reply.header).not.toHaveBeenCalledWith(
+      'Content-Type',
+      'application/json',
+    );
+  });
+
+  it('should not build an error body for a primitive body', () => {
+    const adapter = createAdapter();
+    const reply = replyStub({
+      getHeader: vi.fn(() => 'text/csv'),
+      statusCode: 400,
+    });
+    adapter.reply(reply, 'plain', 400);
+    expect(reply.header).not.toHaveBeenCalledWith(
+      'Content-Type',
+      'application/json',
+    );
+  });
+
+  it('should pass requests through when not shutting down', async () => {
+    const adapter = registerRoute(createAdapter());
+    adapter.initHttpServer({ return503OnClosing: true });
+    expect((await adapter.inject('/')).statusCode).toBe(200);
+  });
+
+  it('should delegate an all route with a non-function handler to fastify', () => {
+    const adapter = createAdapter();
+    const all = vi.fn(() => 'ok');
+    (adapter.getInstance() as any).all = all;
+    const inject = vi.spyOn(adapter as any, 'injectRouteOptions');
+    expect(adapter.all('/x', 'not-a-function' as any)).toBe('ok');
+    expect(inject).not.toHaveBeenCalled();
+    expect(all).toHaveBeenCalledWith('/x', 'not-a-function');
+  });
+
+  it('should keep the proxy path for an explicit onRequest CORS hook', async () => {
+    const adapter = registerRoute(createAdapter());
+    adapter.enableCors({ hook: 'onRequest' } as any);
+    const res = await adapter.inject({
+      method: 'GET',
+      url: '/',
+      headers: { origin: 'http://example.com' },
+    });
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+  });
+
+  it('should keep a middleware path already inside the application prefix', async () => {
+    const adapter = createAdapter();
+    (adapter as any).isMiddieRegistered = true;
+    const use = vi.fn();
+    (adapter.getInstance() as any).use = use;
+    adapter.registerParserMiddleware('api');
+    const factory = await (adapter as any).createMiddlewareFactory(
+      RequestMethod.ALL,
+    );
+    factory('/api/users', vi.fn());
+    expect(use).toHaveBeenCalledWith('/api/users', expect.any(Function));
+  });
+
+  it('should keep a middleware path outside the application prefix', async () => {
+    const adapter = createAdapter();
+    (adapter as any).isMiddieRegistered = true;
+    const use = vi.fn();
+    (adapter.getInstance() as any).use = use;
+    adapter.registerParserMiddleware('api');
+    const factory = await (adapter as any).createMiddlewareFactory(
+      RequestMethod.ALL,
+    );
+    factory('/other', vi.fn());
+    expect(use).toHaveBeenCalledWith('/other', expect.any(Function));
+  });
+
+  it('should inject only a route config', () => {
+    const adapter = createAdapter();
+    const route = vi
+      .spyOn(adapter.getInstance(), 'route')
+      .mockReturnValue(undefined as any);
+    const handler: any = () => undefined;
+    Reflect.defineMetadata(FASTIFY_ROUTE_CONFIG_METADATA, { cache: 1 }, handler);
+    (adapter as any).injectRouteOptions('GET', '/x', handler);
+    expect(route).toHaveBeenCalledWith(
+      expect.objectContaining({ config: { cache: 1 } }),
+    );
+  });
+
+  it('should inject only a route schema', () => {
+    const adapter = createAdapter();
+    const route = vi
+      .spyOn(adapter.getInstance(), 'route')
+      .mockReturnValue(undefined as any);
+    const handler: any = () => undefined;
+    Reflect.defineMetadata(FASTIFY_ROUTE_SCHEMA_METADATA, { body: {} }, handler);
+    (adapter as any).injectRouteOptions('GET', '/x', handler);
+    expect(route).toHaveBeenCalledWith(
+      expect.objectContaining({ schema: { body: {} } }),
+    );
+  });
+
+  it('should leave an absolute target that URL cannot parse untouched', () => {
+    const adapter = createAdapter();
+    expect(
+      (adapter as any).getPathFromRequestTarget('http://host:99999/users'),
+    ).toBe('http://host:99999/users');
+  });
+
+  it('should reject non-error values and objects that are not http errors', () => {
+    const adapter = createAdapter();
+    const plainObject = {};
+    const weirdError = Object.assign(new Error('weird'), {
+      expose: true,
+      statusCode: 'not-a-number',
+    });
+
+    expect(adapter.mapException('failure')).toBe('failure');
+    expect(adapter.mapException(plainObject)).toBe(plainObject);
+    expect(adapter.mapException(weirdError)).toBe(weirdError);
+  });
+});

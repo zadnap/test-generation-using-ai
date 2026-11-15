@@ -1366,4 +1366,148 @@ describe('NodeAdapter', () => {
       expect(next).toHaveBeenCalled();
     });
   });
+
+  describe('remaining decision coverage', () => {
+    it('should keep a non-JSON content type for a plain object body', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes({ getHeader: vi.fn(() => 'text/html') });
+      adapter.reply(res, { value: 1 });
+      expect(res.end).toHaveBeenCalledWith('{"value":1}');
+      expect(res.setHeader).not.toHaveBeenCalledWith(
+        'Content-Type',
+        'application/json; charset=utf-8',
+      );
+    });
+
+    it('should skip requests that match a registered prefix exactly', () => {
+      const adapter = new NodeAdapter();
+      const handler = vi.fn();
+      adapter.setNotFoundHandler(handler, '/api');
+      adapter.setNotFoundHandler(handler);
+      const rootLayer = (adapter.getInstance() as any).stack.at(-1);
+      const next = vi.fn();
+      rootLayer.handler(makeRequest({ url: '/api' }), {}, next);
+      expect(next).toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should rethrow a non-TypeError from path normalization', () => {
+      const adapter = new NodeAdapter();
+      const path = {
+        startsWith: () => false,
+        endsWith: () => {
+          throw new RangeError('bad path');
+        },
+      };
+      expect(() => adapter.normalizePath(path as any)).toThrow(RangeError);
+    });
+
+    it('should rethrow a non-TypeError from a middleware path', () => {
+      const adapter = new NodeAdapter();
+      const factory = adapter.createMiddlewareFactory(RequestMethod.GET);
+      const path = {
+        endsWith: () => false,
+        startsWith: () => {
+          throw new RangeError('bad middleware path');
+        },
+      };
+      expect(() => factory(path as any, vi.fn())).toThrow(RangeError);
+    });
+
+    it('should pass on for a media type array without a neutral version', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), ['2'], {
+        type: VersioningType.MEDIA_TYPE,
+        key: 'v=',
+      } as any);
+      filter({ headers: {} }, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should pass on for a header array without a neutral version', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), ['2'], {
+        type: VersioningType.HEADER,
+        header: 'X-Version',
+      } as any);
+      filter({ headers: {} }, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should pass on a media type version that is not a string or array', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), 1 as any, {
+        type: VersioningType.MEDIA_TYPE,
+        key: 'v=',
+      } as any);
+      filter({ headers: { accept: 'application/json;v=2' } }, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should pass on a header version that is not a string or array', () => {
+      const adapter = new NodeAdapter();
+      const next = vi.fn();
+      const filter = adapter.applyVersionFilter(vi.fn(), 1 as any, {
+        type: VersioningType.HEADER,
+        header: 'X-Version',
+      } as any);
+      filter({ headers: { 'x-version': '2' } }, {}, next);
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('should accept a response hook that returns a non-thenable value', () => {
+      const adapter = new NodeAdapter();
+      let finish!: () => void;
+      const res = makeRes({
+        on: vi.fn((_event: string, callback: () => void) => {
+          finish = callback;
+        }),
+      });
+      const hook = vi.fn(() => ({ done: true }) as any);
+      const logger = vi.spyOn((adapter as any).logger, 'error');
+      adapter.setOnResponseHook(hook);
+      (adapter as any).handleRequest(makeRequest(), res);
+      finish();
+      expect(hook).toHaveBeenCalled();
+      expect(logger).not.toHaveBeenCalled();
+    });
+
+    it('should accept a request hook that returns a non-thenable value', () => {
+      const adapter = new NodeAdapter();
+      adapter.setOnRequestHook((_req, _res, done) => {
+        done();
+        return { done: true } as any;
+      });
+      const spy = vi.spyOn(adapter.getInstance(), 'handle');
+      (adapter as any).handleRequest(makeRequest(), makeRes());
+      expect(spy).toHaveBeenCalled();
+    });
+
+    it('should cap an out of range final status at 500', () => {
+      const adapter = new NodeAdapter();
+      const res = makeRes();
+      (adapter as any).finalHandler(
+        { statusCode: 700, stack: 'stack' },
+        makeRequest(),
+        res,
+      );
+      expect(res.statusCode).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+    });
+
+    it('should reject non-error values and objects that are not http errors', () => {
+      const adapter = new NodeAdapter();
+      const plainObject = {};
+      const weirdError = Object.assign(new Error('weird'), {
+        expose: true,
+        statusCode: 'not-a-number',
+      });
+
+      expect(adapter.mapException('failure')).toBe('failure');
+      expect(adapter.mapException(plainObject)).toBe(plainObject);
+      expect(adapter.mapException(weirdError)).toBe(weirdError);
+    });
+  });
 });

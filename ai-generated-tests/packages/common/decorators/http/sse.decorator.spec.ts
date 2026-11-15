@@ -66,4 +66,18 @@ describe('Sse', () => {
 
     expect(Reflect.getMetadata(PATH_METADATA, descriptor.value)).toBe('/');
   });
+
+  it('uses the root path when the path is a truthy empty string object', () => {
+    class Target {
+      method() {}
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Target.prototype,
+      'method',
+    )!;
+
+    Sse(new String('') as any)(Target.prototype, 'method', descriptor);
+
+    expect(Reflect.getMetadata(PATH_METADATA, descriptor.value)).toBe('/');
+  });
 });

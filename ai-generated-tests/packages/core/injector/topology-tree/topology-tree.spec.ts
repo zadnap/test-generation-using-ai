@@ -18,7 +18,7 @@
  * TopologyTree.callback @L48 - D=2, P=3.
  *   1c1=child | 1c2=!visited.has(child)
  */
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { TopologyTree } from '../../../../../packages/core/injector/topology-tree/topology-tree.js';
 describe('TopologyTree', () => {
   describe('constructor/sortTopologically/walk', () => {
@@ -29,6 +29,20 @@ describe('TopologyTree', () => {
       branch.imports.add(root);
       new TopologyTree(root).walk(() => undefined);
       new TopologyTree(leaf).walk(() => undefined);
+    });
+
+    it('keeps the first depth when a second parent reaches at the same depth', () => {
+      const leaf: any = {};
+      const left: any = { imports: new Set([leaf]) };
+      const right: any = { imports: new Set([leaf]) };
+      const root: any = { imports: new Set([left, right]) };
+
+      const depths: Array<[string, number]> = [];
+      new TopologyTree(root).walk((module, depth) => {
+        depths.push([module === leaf ? 'leaf' : 'other', depth]);
+      });
+
+      expect(depths.find(([name]) => name === 'leaf')![1]).toBe(3);
     });
   });
 });

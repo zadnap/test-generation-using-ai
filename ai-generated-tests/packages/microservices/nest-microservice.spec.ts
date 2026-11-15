@@ -16,7 +16,7 @@ const socketModuleStub = vi.hoisted(() => ({
 // test decide whether the package exposes a SocketModule or not. Vitest only
 // matches mock ids given as resolved absolute paths here, so the id is literal.
 vi.mock(
-  'F:/học/uet/kiểm thử/test-generation-using-ai/packages/websockets/socket-module.js',
+  `${process.cwd().replace(/\\/g, '/')}/packages/websockets/socket-module.js`,
   () => ({
     get SocketModule() {
       return socketModuleStub.current;

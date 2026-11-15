@@ -91,6 +91,11 @@ describe('BaseExceptionFilter', () => {
         statusCode: 400,
         status: 401,
       }),
+      Object.assign(new Error('non-numeric status'), {
+        expose: true,
+        statusCode: '400',
+        status: '400',
+      }),
     ])('error %j', error => {
       const filter = new BaseExceptionFilter();
       filter.isExceptionObject(error);

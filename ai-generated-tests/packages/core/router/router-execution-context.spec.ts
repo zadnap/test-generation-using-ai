@@ -232,6 +232,60 @@ describe('RouterExecutionContext', () => {
   });
 
   describe('isPipeable/createPipesFn/getParamValue/exchangeKeysForValues/createGuardsFn', () => {
+    it('leaves a non-thenable value of a pipeable param without pipes as final', async () => {
+      const value = create();
+      await value.createPipesFn([], [
+        {
+          index: 0,
+          type: RouteParamtypes.BODY,
+          extractValue: () => 1,
+          pipes: [],
+        },
+        {
+          index: 1,
+          type: RouteParamtypes.QUERY,
+          extractValue: () => null,
+          pipes: [],
+        },
+        {
+          index: 2,
+          type: RouteParamtypes.PARAM,
+          extractValue: () => 'text',
+          pipes: [],
+        },
+      ])([], {}, {}, () => undefined);
+    });
+
+    it('uses a redirect response only when its url is a string', () => {
+      const value = create();
+      const fn = value.createHandleResponseFn(() => undefined, false, {
+        url: undefined,
+      } as any);
+      expect(typeof fn).toBe('function');
+    });
+
+    it('does not resend a consumed handler stream', async () => {
+      const value = create();
+      const body = new ReadableStream();
+      body.getReader();
+
+      expect(value.pickStreamingBody({ wrapped: true }, [body])).toBeUndefined();
+    });
+
+    it('rethrows a non-EmptyError after a client disconnect', async () => {
+      const value = create();
+      vi.spyOn(value.responseController, 'transformToResult').mockRejectedValue(
+        new Error('boom'),
+      );
+
+      await expect(
+        value.createHandleResponseFn(() => undefined, false)(
+          of('value'),
+          {},
+          { socket: { destroyed: true } },
+        ),
+      ).rejects.toThrow('boom');
+    });
     it('all parameter kinds, synchronous/thenable extraction and pipe/extractor failure', async () => {
       const value = create();
       for (const type of [

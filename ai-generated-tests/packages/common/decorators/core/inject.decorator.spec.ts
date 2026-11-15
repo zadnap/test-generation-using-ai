@@ -60,4 +60,15 @@ describe('Inject', () => {
       { index: 1, param: 'B' },
     ]);
   });
+
+  it('does not infer a token when Inject is called with an explicit undefined', () => {
+    class Target {}
+    Reflect.defineMetadata(PARAMTYPES_METADATA, ['Inferred'], Target);
+
+    Inject(undefined)(Target.prototype, 'dep', undefined);
+
+    expect(Reflect.getMetadata(PROPERTY_DEPS_METADATA, Target)).toEqual([
+      { key: 'dep', type: undefined },
+    ]);
+  });
 });

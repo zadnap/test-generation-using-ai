@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Logger } from '../../../../../packages/common/services/logger.service.js';
 import { FileTypeValidator } from '../../../../../packages/common/pipes/file/file-type.validator.js';
 import type { IFile } from '../../../../../packages/common/pipes/file/interfaces/file.interface.js';
 
@@ -172,6 +173,25 @@ describe('FileTypeValidator (C3)', () => {
           buffer: throwingBuffer('ERR_MODULE_NOT_FOUND'),
         }),
       ).toBe(true);
+    });
+
+    it('warns about a missing ESM dynamic import callback', async () => {
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      const validator = new FileTypeValidator({ fileType: 'image/png' });
+
+      expect(
+        await validator.isValid({
+          mimetype: 'image/png',
+          size: 4,
+          buffer: throwingBuffer(
+            new Error('ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING'),
+          ),
+        }),
+      ).toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING'),
+      );
+      warn.mockRestore();
     });
 
     it.each([

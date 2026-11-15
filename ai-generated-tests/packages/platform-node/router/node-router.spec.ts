@@ -507,4 +507,62 @@ describe('NodeRouter', () => {
       expect(req).toBeInstanceOf(CustomRequest);
     });
   });
+
+  describe('remaining decision coverage', () => {
+    it('should reject a path list holding a non-string entry', () => {
+      const { router } = setup();
+      expect(() =>
+        router.use([1] as any, (() => undefined) as any),
+      ).toThrow(TypeError);
+    });
+
+    it('should mount at the root with an explicit slash', () => {
+      const { router, finalHandler } = setup();
+      const root = vi.fn();
+      router.use('/', root);
+      router.handle(makeReq('/any'), makeRes());
+      expect(root).toHaveBeenCalledTimes(1);
+      expect(finalHandler).not.toHaveBeenCalled();
+    });
+
+    it('should dispatch through a root mount and a trailing-slash mount', () => {
+      const { router } = setup();
+      const root = vi.fn((_req, _res, next) => next());
+      const api = vi.fn();
+      router.use('/', root);
+      router.use('/api', api);
+      router.handle(makeReq('/api/'), makeRes());
+      expect(root).toHaveBeenCalledTimes(1);
+      expect(api).toHaveBeenCalledTimes(1);
+    });
+
+    it('should normalize route and router errors passed to next', () => {
+      const { router } = setup();
+      const routeHandler = vi.fn((_req, _res, next) => next('route'));
+      const routerHandler = vi.fn((_req, _res, next) => next('router'));
+      router.get('/route', routeHandler);
+      router.useExact(undefined, '/router', routerHandler);
+      router.handle(makeReq('/route'), makeRes());
+      router.handle(makeReq('/router'), makeRes());
+      expect(routeHandler).toHaveBeenCalledTimes(1);
+      expect(routerHandler).toHaveBeenCalledTimes(1);
+    });
+
+    it('should skip a method-scoped middleware for HEAD of another method', () => {
+      const { router } = setup();
+      const post = vi.fn();
+      router.useExact('POST', '/x', post);
+      router.handle(makeReq('/x', 'HEAD'), makeRes());
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    it('should still visit layers sharing the prefix of a preceding one', () => {
+      const { router } = setup();
+      const exact = vi.fn();
+      router.useExact(undefined, '/api', vi.fn());
+      router.useExact(undefined, '/api/users', exact);
+      router.handle(makeReq('/api/users'), makeRes());
+      expect(exact).toHaveBeenCalledTimes(1);
+    });
+  });
 });

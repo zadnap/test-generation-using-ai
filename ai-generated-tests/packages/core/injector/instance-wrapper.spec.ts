@@ -300,6 +300,7 @@ describe('InstanceWrapper', () => {
       [Scope.TRANSIENT, 'static', 'default', 'none'],
       [Scope.TRANSIENT, 'static', 'transient', 'none'],
       [Scope.TRANSIENT, 'static', 'transient', 'default'],
+      [Scope.TRANSIENT, 'static', 'transient', 'transient'],
       [Scope.TRANSIENT, 'static', 'request', 'transient'],
       [Scope.TRANSIENT, 'static', 'none', 'default'],
       [Scope.TRANSIENT, 'dynamic', 'request', 'none'],
@@ -333,6 +334,42 @@ describe('InstanceWrapper', () => {
       value.addCtorMetadata(0, wrapper({ scope: Scope.REQUEST }));
       value.isInRequestScope(context());
       value.isInRequestScope(context(), wrapper());
+    });
+
+    it('is not explicitly requested without an inquirer', () => {
+      const value = wrapper();
+      expect(value.isExplicitlyRequested(context())).toBe(false);
+    });
+
+    it('invalidates a cached parent attribute and ignores non-wrapper parents', () => {
+      const parent: any = wrapper();
+      const child: any = wrapper();
+      parent.isTreeStatic = true;
+      parent.addCtorMetadata(0, child);
+      child.invalidateDependencyTreeParents('isTreeStatic');
+      expect(parent.isTreeStatic).toBeUndefined();
+
+      const other: any = wrapper();
+      other.registerDependencyTreeParent({ notAWrapper: true } as any);
+      expect(other).toBeInstanceOf(Object);
+    });
+
+    it('generates a random uuid when no key can be built', () => {
+      const value: any = wrapper({ name: undefined });
+      expect(typeof value.generateUuid()).toBe('string');
+    });
+
+    it('visits a shared dependent only once', () => {
+      const root: any = wrapper();
+      const left: any = wrapper();
+      const right: any = wrapper();
+      const top: any = wrapper();
+      left.addCtorMetadata(0, root);
+      right.addCtorMetadata(0, root);
+      top.addCtorMetadata(0, left);
+      top.addCtorMetadata(1, right);
+
+      expect(root.getDependents()).toEqual(new Set([left, right, top]));
     });
   });
   describe('mergeWith/resetStaticInstance', () => {

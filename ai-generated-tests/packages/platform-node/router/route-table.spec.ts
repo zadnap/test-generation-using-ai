@@ -404,6 +404,143 @@ describe('RouteTable', () => {
     });
   });
 
+  describe('remaining decision coverage', () => {
+    it('should accept a route for every method when scanning lookupRest', () => {
+      const table = new RouteTable();
+      const h = handler();
+      table.add(null, '/any', h);
+      expect(table.lookupRest('GET', '/any', [])).toEqual([
+        { handler: h, params: {} },
+      ]);
+    });
+
+    it('should let HEAD fall back to a GET route when scanning lookupRest', () => {
+      const table = new RouteTable();
+      const h = handler();
+      table.add('GET', '/head', h);
+      expect(table.lookupRest('HEAD', '/head', [])).toEqual([
+        { handler: h, params: {} },
+      ]);
+    });
+
+    it('should fall back when a parameter is followed by text find-my-way cannot name', () => {
+      const table = new RouteTable();
+      const h = handler();
+      table.add('GET', '/:id@x', h);
+      expect(table.lookup('GET', '/abc@x')!.params).toEqual({ id: 'abc' });
+      expect(table.lookup('GET', '/abc@x')!.handlers).toEqual([h]);
+    });
+
+    it('should reject a parameter directly followed by a wildcard', () => {
+      const table = new RouteTable();
+      expect(() => table.add('GET', '/:id*rest', handler())).toThrow();
+    });
+
+    it('should fall back when a wildcard is not the last token', () => {
+      const table = new RouteTable();
+      const h = handler();
+      table.add('GET', '/*rest/x', h);
+      expect(table.lookup('GET', '/a/x')!.handlers).toEqual([h]);
+    });
+
+    it('should fall back for a route whose whole path ends with a slash', () => {
+      const table = new RouteTable();
+      const h = handler();
+      table.add('GET', '/trailing/', h);
+      expect(table.lookup('GET', '/trailing/')!.handlers).toEqual([h]);
+    });
+
+    it('should keep the first variant translating to an already used path', () => {
+      const table = new RouteTable();
+      table.add('GET', '/a{/:x}{/:y}', handler());
+      expect(table.lookup('GET', '/a/1')!.params).toEqual({ x: '1' });
+    });
+
+    it('should skip re-assigning the path matcher of an existing record', () => {
+      const table = new RouteTable();
+      table.add('GET', '/admin/{*path}', handler());
+      table.add('GET', '/admin/*rest', handler());
+      expect(table.lookup('GET', '/admin/x')!.handlers).toHaveLength(2);
+    });
+
+    it('should ignore a trailing slash on the root when a partial route exists', () => {
+      const table = new RouteTable();
+      const root = handler();
+      table.add('GET', '/', root);
+      table.add('GET', '/admin/{*path}', handler());
+      expect(table.lookup('GET', '/')!.handlers).toEqual([root]);
+    });
+
+    it('should return the tree match when a partial route exceeds the parameter limit', () => {
+      const table = new RouteTable({ maxParamLength: 2 });
+      const wildcard = handler();
+      table.add('GET', '/x/:a/{*rest}', handler());
+      table.add('GET', '/x/*rest', wildcard);
+      expect(table.lookup('GET', '/x/abc/')!.handlers).toEqual([wildcard]);
+    });
+
+    it('should treat an empty wildcard after a mixed segment as a parameter', () => {
+      const table = new RouteTable();
+      table.add('GET', '/:id.json/*rest', handler());
+      expect(table.lookup('GET', '/abc.json/')).toBeNull();
+      expect(table.lookup('GET', '/abc.json//')!.params).toEqual({
+        id: 'abc',
+        rest: ['', ''],
+      });
+    });
+
+    it('should not apply path matchers to the root path', () => {
+      const table = new RouteTable();
+      const root = handler();
+      table.add('GET', '/{/}', root);
+      expect(table.lookup('GET', '/')!.handlers).toEqual([root]);
+    });
+
+    it('should expose a wildcard after a parameter as an array', () => {
+      const table = new RouteTable();
+      table.add('GET', '/files/:dir/*rest', handler());
+      expect(table.lookup('GET', '/files/a/b')!.params).toEqual({
+        dir: 'a',
+        rest: ['b'],
+      });
+    });
+
+    it('should skip a non-partial fallback route when scanning partial routes', () => {
+      const table = new RouteTable();
+      table.add('GET', '/files/{*path}', handler());
+      table.add('GET', '/a\\?b', handler());
+      const target = handler();
+      table.add('GET', '/target', target);
+      expect(table.lookup('GET', '/target/')!.handlers).toEqual([target]);
+    });
+
+    it('should skip a route of another method in lookupRest', () => {
+      const table = new RouteTable();
+      table.add('POST', '/x', handler());
+      expect(table.lookupRest('GET', '/x', [])).toEqual([]);
+    });
+
+    it('should not skip a prefix that the path starts with in lookupRest', () => {
+      const table = new RouteTable();
+      const api = handler();
+      table.add('GET', '/api', api);
+      table.add('GET', '/api/users', handler());
+      table.add('GET', '/api/users/1', handler());
+      expect(table.lookupRest('GET', '/api', [])).toEqual([
+        { handler: api, params: {} },
+      ]);
+    });
+
+    it('should reuse compiled matchers and prefix skips across lookups', () => {
+      const table = new RouteTable();
+      table.add('GET', '/ext/:file.:ext', handler());
+      expect(table.lookup('GET', '/ext/.b')).toBeNull();
+      expect(table.lookup('GET', '/ext/.b')).toBeNull();
+      expect(table.lookupRest('GET', '/ext/a.b', [])).toHaveLength(1);
+      expect(table.lookupRest('GET', '/ext/a.b', [])).toHaveLength(1);
+    });
+  });
+
   describe('lookupRest', () => {
     it('should return every other matching route', () => {
       const table = new RouteTable();

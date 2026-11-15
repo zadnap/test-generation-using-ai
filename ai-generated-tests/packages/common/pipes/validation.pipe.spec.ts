@@ -471,6 +471,15 @@ describe('ValidationPipe (C3)', () => {
     it('returns an empty string for a plain object metatype', () => {
       expect(pipe.callToEmptyIfNil(undefined, { A: 'a' })).toBe('');
     });
+
+    it('returns an empty string when the metatype is nullish', () => {
+      expect(pipe.callToEmptyIfNil(undefined, null as any)).toBe('');
+    });
+
+    it('returns an empty string when the prototype has no constructor', () => {
+      const metatype = { prototype: { constructor: undefined } };
+      expect(pipe.callToEmptyIfNil(undefined, metatype as any)).toBe('');
+    });
   });
 
   describe('isPrimitive', () => {
@@ -576,6 +585,15 @@ describe('ValidationPipe (C3)', () => {
         },
       ]);
       expect(result).toMatchObject({ extra: ['override'] });
+    });
+
+    it('does not recurse into an empty children array', () => {
+      const pipe = new ExposedValidationPipe();
+      expect(
+        pipe.callGroup([
+          { property: 'empty', constraints: { c: 'invalid' }, children: [] },
+        ]),
+      ).toEqual({ empty: ['invalid'] });
     });
   });
 

@@ -214,6 +214,9 @@ describe('RouteConflictDetector', () => {
       ['/files/*', '/files/:name:ext'],
       ['/a{/b}{/c}{/d}{/e}{/f}{/g}{/h}', '/a'],
       ['/x/:id/a', '/x/:name/b/c'],
+      ['/a/:id.foo', '/b/:id.foo'],
+      ['/a/:id.foo', '/a/:id.foo'],
+      ['/a/x:id.foo', '/b/y:id.foo'],
     ])('overlap %s/%s', (a, b) => {
       detector.pathsCanOverlap(a, b);
     });
@@ -228,6 +231,7 @@ describe('RouteConflictDetector', () => {
       [{}, { path: '/users/:name' }],
       [{ host: 'a' }, { host: 'b' }],
       [{ version: '1' }, { version: '2' }],
+      [{ method: RequestMethod.GET }, { method: RequestMethod.ALL }],
     ])('pair %j/%j', (a, b) => {
       detector.detect([route(a), route(b)], {
         type: VersioningType.HEADER,
@@ -291,6 +295,29 @@ describe('RouteConflictDetector', () => {
     ])('hosts %j/%j', (a, b) => {
       detector.hostsCanOverlap(a, b);
       detector.hostsAreIdentical(a, b);
+    });
+  });
+  describe('remaining decision coverage', () => {
+    it('should not overlap mixed segments whose leading text differs', () => {
+      expect(detector.pathsCanOverlap('/:p/x:id.txt', '/:p/y:id.txt')).toBe(
+        false,
+      );
+    });
+
+    it('should stop comparing segments once a pair already differs', () => {
+      expect(detector.pathsCanOverlap('/a/:id/x/y', '/a/:name/z/w')).toBe(
+        false,
+      );
+    });
+
+    it('should report a shadow when only the host patterns differ', () => {
+      const conflicts = detector.detect(
+        [route({ host: 'a.com' }), route({ host: /.*/ })],
+        { type: VersioningType.HEADER, header: 'version' },
+      );
+      expect(conflicts.map((conflict: any) => conflict.kind)).toEqual([
+        'shadow',
+      ]);
     });
   });
   describe('handle/describeConflict/filterSortResolvedShadows', () => {

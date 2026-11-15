@@ -970,4 +970,64 @@ describe('ConsoleLogger (C3)', () => {
       expect(written(stdoutSpy)).toContain('password is secret');
     });
   });
+
+  describe('MC/DC review additions', () => {
+    it('disables every level when the options object is missing', () => {
+      const logger = new ConsoleLogger();
+      (logger as any).options = undefined;
+
+      expect(logger.isLevelEnabled('log')).toBe(false);
+    });
+
+    it.each([
+      ['message', 'value', 'value'],
+      ['errors', undefined, 'boom'],
+    ])(
+      'skips the reserved error property %s',
+      (key, expected, expectedMessage) => {
+        const logger: any = new ConsoleLogger();
+        const error = new Error('boom');
+        Object.defineProperty(error, key, {
+          value: 'value',
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+
+        const serialized = logger.serializeError(error);
+
+        expect(serialized[key]).toBe(expected);
+        expect(serialized.message).toBe(expectedMessage);
+      },
+    );
+
+    it('skips an own object property of an error', () => {
+      const logger: any = new ConsoleLogger();
+      const error = Object.assign(new Error('boom'), { config: { id: 1 } });
+
+      const serialized = logger.serializeError(error);
+
+      expect(serialized.config).toBeUndefined();
+      expect(serialized.code).toBeUndefined();
+    });
+
+    it('keeps a null param value in the JSON output', () => {
+      const logger = new ConsoleLogger({ logLevels: ALL_LEVELS, json: true });
+      logger.log('message', { nothing: null });
+
+      expect(written(stdoutSpy)).toContain('"nothing":null');
+    });
+
+    it('stops with the primitive value past the JSON length limit', () => {
+      const logger = new ConsoleLogger({ logLevels: ALL_LEVELS, json: true });
+      logger.log('message', {
+        huge: 'x'.repeat(1_000_010),
+        nothing: null,
+      });
+
+      const output = written(stdoutSpy);
+      expect(output).toContain('[Truncated]');
+      expect(output).toContain('"nothing":null');
+    });
+  });
 });

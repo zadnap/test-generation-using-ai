@@ -212,6 +212,38 @@ describe('NestFactoryStatic', () => {
         }),
       );
     });
+
+    it('initializes successfully with the default abortOnError', async () => {
+      @Module({})
+      class Root {}
+      const context = await new NestFactoryStatic().createApplicationContext(
+        Root,
+        { logger: false },
+      );
+      contexts.push(context);
+      await context.init();
+    });
+
+    it('aborts on initialization failure when abortOnError is not false', async () => {
+      const abort = vi
+        .spyOn(process, 'abort')
+        .mockImplementation((() => {
+          throw new Error('aborted');
+        }) as any);
+      @Injectable()
+      class Broken {
+        constructor(@Inject('missing') value: unknown) {}
+      }
+      @Module({ providers: [Broken] })
+      class Root {}
+      const create = new NestFactoryStatic().createApplicationContext(Root, {
+        logger: false,
+        preview: true,
+      });
+
+      await expect(create).rejects.toThrow();
+      expect(abort).toHaveBeenCalled();
+    });
   });
   describe('createExceptionProxy/createExceptionZone/createAdapterProxy', () => {
     it('missing property, data, callable, selected object and adapter chaining paths', async () => {
@@ -236,6 +268,33 @@ describe('NestFactoryStatic', () => {
       factory.registerLoggerConfiguration({ logger: false });
       factory.setAbortOnError(undefined);
       factory.setAbortOnError({ patch() {} }, { abortOnError: false });
+    });
+
+    it('covers the remaining private-decision outcomes', () => {
+      const factory: any = new NestFactoryStatic();
+      const target: any = {
+        appOptions: { abortOnError: true },
+        select: () => ({ appOptions: { abortOnError: true } }),
+      };
+      const proxy = factory.createProxy(target);
+
+      // select without per-call options: the app options decide, and they do
+      // not request rethrow.
+      proxy.select(null);
+      // select with abortOnError: true and a non-object result: no re-proxy.
+      target.select = () => 5;
+      expect(proxy.select(null, { abortOnError: true })).toBe(5);
+
+      // logger undefined (condition 2c2 false) and forceConsole false (3 false).
+      factory.registerLoggerConfiguration({ logger: undefined });
+      factory.registerLoggerConfiguration({ logger: true, forceConsole: false });
+
+      // isHttpServer true with undefined options (2c1 false).
+      factory.setAbortOnError({ patch() {} });
+      // isHttpServer true with options that do not request rethrow (2c2 false).
+      factory.setAbortOnError({ patch() {} }, {});
+      // isHttpServer false with abortOnError not false (3c2 false).
+      factory.setAbortOnError({ abortOnError: true });
     });
   });
 });

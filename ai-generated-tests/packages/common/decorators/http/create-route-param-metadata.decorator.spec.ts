@@ -78,6 +78,11 @@ describe('createParamDecorator', () => {
     expect(register(() => undefined, [plainFunction]).data).toBe(plainFunction);
   });
 
+  it('treats a constructor without a transform prototype as data', () => {
+    function NotAPipe(this: any) {}
+    expect(register(() => undefined, [NotAPipe]).data).toBe(NotAPipe);
+  });
+
   it('treats a pure options object as options', () => {
     const entry = register(() => undefined, [
       { schema, pipes: [ClassPipe, null, instancePipe] },

@@ -193,6 +193,15 @@ describe('createRedactor (C3)', () => {
       expect(Object.getPrototypeOf(result)).toBeNull();
       expect(result).toEqual({ password: '[REDACTED]', keep: 1 });
     });
+
+    it('keeps a null property value unchanged', () => {
+      const result = redact(['password'], {
+        password: 'a',
+        value: null,
+      }) as Record<string, unknown>;
+
+      expect(result).toEqual({ password: '[REDACTED]', value: null });
+    });
   });
 
   describe('errors', () => {
@@ -210,6 +219,21 @@ describe('createRedactor (C3)', () => {
       expect(result.code).toBe('E_HTTP');
       expect(result.config.headers.authorization).toBe('[REDACTED]');
       expect(error.config.headers.authorization).toBe('Bearer x');
+    });
+
+    it('does not treat a data "stack" descriptor as an accessor', () => {
+      const error = Object.assign(new Error('failed'), { token: 'a' });
+      Object.defineProperty(error, 'stack', {
+        value: 'custom stack',
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+
+      const result = redact(['token'], error) as typeof error;
+
+      expect(result.stack).toBe('custom stack');
+      expect((result as any).token).toBe('[REDACTED]');
     });
 
     it('redacts cause and AggregateError#errors', () => {

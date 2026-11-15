@@ -88,6 +88,11 @@ describe('core error messages', () => {
         { index: 0 } as any,
         undefined,
       );
+      messages.UNKNOWN_DEPENDENCIES_MESSAGE(
+        'Fixture',
+        { index: 0, name: 'dep', dependencies: [] } as any,
+        { metatype: undefined } as any,
+      );
     });
   });
   describe('other exported messages', () => {
@@ -107,6 +112,7 @@ describe('core error messages', () => {
       messages.UNDEFINED_MODULE_ENTRY_MESSAGE(undefined, 'providers', 0);
       messages.INVALID_PROVIDER_MESSAGE('token', 'Fixture');
       messages.UNKNOWN_EXPORT_MESSAGE('token', 'Fixture');
+      messages.UNKNOWN_EXPORT_MESSAGE(Symbol('token'), 'Fixture');
       messages.INVALID_CLASS_MESSAGE([''] as any, 'Fixture');
       messages.INVALID_CLASS_SCOPE_MESSAGE([''] as any, 'Fixture');
       messages.REQUEST_SCOPED_CREATE_MESSAGE('Fixture');

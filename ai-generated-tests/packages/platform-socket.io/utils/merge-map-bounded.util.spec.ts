@@ -1,6 +1,7 @@
 import {
   EMPTY,
   from,
+  NEVER,
   of,
   Subject,
   Subscription,
@@ -88,6 +89,30 @@ describe('mergeMapBounded (C3)', () => {
       source$.next(0);
 
       expect(calls).toBe(1);
+      expect(subscription.closed).toBe(true);
+    });
+
+    it('checks the closed subscriber while the concurrency limit still allows work', () => {
+      const source$ = new Subject<number>();
+      let subscription: Subscription | undefined;
+      const calls: number[] = [];
+
+      subscription = source$
+        .pipe(
+          mergeMapBounded(value => {
+            calls.push(value);
+            if (value === 0) {
+              source$.next(1);
+              subscription!.unsubscribe();
+            }
+            return NEVER;
+          }, 2),
+        )
+        .subscribe();
+
+      source$.next(0);
+
+      expect(calls).toEqual([0]);
       expect(subscription.closed).toBe(true);
     });
   });

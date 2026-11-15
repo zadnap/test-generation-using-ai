@@ -633,4 +633,163 @@ describe('body-parser', () => {
       expect(req.body).toBe('hello');
     });
   });
+
+  describe('remaining decision coverage', () => {
+    it('should use the default limit for a null limit', async () => {
+      const { error, req } = await run(json({ limit: null as any }), {
+        body: '{"a":1}',
+        contentType: JSON_HEADERS,
+      });
+      expect(error).toBeUndefined();
+      expect(req.body).toEqual({ a: 1 });
+    });
+
+    it('should parse a body typed by a function without a content type', async () => {
+      const { req } = await run(text({ type: () => true }), { body: 'hello' });
+      expect(req.body).toBe('hello');
+    });
+
+    it('should skip a destroyed request', async () => {
+      const parser = json();
+      const req: any = Readable.from([Buffer.from('{}')]);
+      req.headers = {
+        'content-type': JSON_HEADERS,
+        'content-length': '2',
+      };
+      req.destroy();
+      const next = vi.fn();
+      parser(req, {}, next);
+      expect(next).toHaveBeenCalledWith();
+      expect(req.body).toBeUndefined();
+    });
+
+    it('should accept an unknown content length with a transfer encoding', async () => {
+      const { error, req } = await run(json(), {
+        body: '{"a":1}',
+        contentType: JSON_HEADERS,
+        headers: {
+          'content-length': undefined as any,
+          'transfer-encoding': 'chunked',
+        },
+      });
+      expect(error).toBeUndefined();
+      expect(req.body).toEqual({ a: 1 });
+    });
+
+    it('should report a stream error on a live request', async () => {
+      const parser = json();
+      const req: any = Readable.from([Buffer.from('{}')]);
+      req.headers = {
+        'content-type': JSON_HEADERS,
+        'content-length': '2',
+      };
+      req.complete = true;
+      const error = await new Promise<any>(resolve => {
+        parser(req, {}, resolve);
+        req.emit('error', new Error('boom'));
+      });
+      expect(error).toMatchObject({
+        status: 400,
+        type: 'stream.error',
+        message: 'boom',
+      });
+    });
+
+    it('should use a verify statusCode', async () => {
+      const { error } = await run(
+        json({
+          verify: () => {
+            throw Object.assign(new Error('v'), { statusCode: 418 });
+          },
+        }),
+        { body: '{}', contentType: JSON_HEADERS },
+      );
+      expect(error).toMatchObject({ status: 418, statusCode: 418 });
+    });
+
+    it('should force a 403 for a verify status above 599', async () => {
+      const { error } = await run(
+        json({
+          verify: () => {
+            throw Object.assign(new Error('v'), { status: 700 });
+          },
+        }),
+        { body: '{}', contentType: JSON_HEADERS },
+      );
+      expect(error).toMatchObject({ status: 403 });
+    });
+
+    it('should not read a byte order mark that is not a full one', async () => {
+      const { req } = await run(text(), {
+        body: Buffer.from([0xff, 0x00, 0x41, 0x00]),
+        contentType: 'text/plain; charset=utf-16',
+      });
+      expect(req.body).toBe('\u00ffA');
+    });
+
+    it('should not read the other byte order mark that is not a full one', async () => {
+      const { req } = await run(text(), {
+        body: Buffer.from([0xfe, 0x00, 0x42, 0x00]),
+        contentType: 'text/plain; charset=utf-16',
+      });
+      expect(req.body).toBe('\u00feB');
+    });
+
+    it('should count neither order for null pairs', async () => {
+      const { req } = await run(text(), {
+        body: Buffer.from([0x00, 0x00, 0x00, 0x00]),
+        contentType: 'text/plain; charset=utf-16',
+      });
+      expect(req.body).toBe('\u0000\u0000');
+    });
+
+    it('should not count a leading zero byte after a non-zero one as little endian', async () => {
+      const { req } = await run(text(), {
+        body: Buffer.from([0x41, 0x42]),
+        contentType: 'text/plain; charset=utf-16',
+      });
+      expect(req.body).toBe('\u4241');
+    });
+
+    it('should skip a leading tab in strict JSON', async () => {
+      const { req } = await run(json(), {
+        body: '\t{"a":1}',
+        contentType: JSON_HEADERS,
+      });
+      expect(req.body).toEqual({ a: 1 });
+    });
+
+    it('should skip a leading newline in strict JSON', async () => {
+      const { req } = await run(json(), {
+        body: '\n{"a":1}',
+        contentType: JSON_HEADERS,
+      });
+      expect(req.body).toEqual({ a: 1 });
+    });
+
+    it('should skip a leading carriage return in strict JSON', async () => {
+      const { req } = await run(json(), {
+        body: '\r{"a":1}',
+        contentType: JSON_HEADERS,
+      });
+      expect(req.body).toEqual({ a: 1 });
+    });
+
+    it('should skip a byte order mark after whitespace when scanning JSON', async () => {
+      const { error } = await run(json({ strict: false }), {
+        body: ' \ufeff123',
+        contentType: JSON_HEADERS,
+      });
+      expect(error).toMatchObject({ status: 400, type: 'entity.parse.failed' });
+    });
+
+    it('should accept a top-level array in strict mode', async () => {
+      const { req } = await run(json(), {
+        body: '[1,2]',
+        contentType: JSON_HEADERS,
+      });
+      expect(req.body).toEqual([1, 2]);
+    });
+
+  });
 });

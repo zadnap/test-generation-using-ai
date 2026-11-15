@@ -389,4 +389,29 @@ describe('DependenciesScanner', () => {
       create().scanner.calculateModulesDistance();
     });
   });
+  describe('remaining decision coverage', () => {
+    it('should resolve a lazy module registered but not instantiated', async () => {
+      const { container, scanner } = create();
+      @Module({})
+      class LazyModule {}
+
+      await scanner.insertModule(LazyModule, []);
+      const bindGlobalsToImports = vi.spyOn(container, 'bindGlobalsToImports');
+
+      const modules = await scanner.scanForModules({
+        moduleDefinition: LazyModule,
+        lazy: true,
+      });
+
+      expect(bindGlobalsToImports).toHaveBeenCalledTimes(1);
+      expect(modules).toHaveLength(1);
+    });
+
+    it('should skip metadata reflection for a class without a prototype', () => {
+      const { scanner } = create();
+      expect(() =>
+        scanner.reflectDynamicMetadata((() => undefined) as any, 'token'),
+      ).not.toThrow();
+    });
+  });
 });

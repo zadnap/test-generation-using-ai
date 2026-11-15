@@ -71,4 +71,52 @@ describe('MiddlewareBuilder/ConfigProxy', () => {
     builder.getHttpAdapter();
     builder.build();
   });
+
+  it('adds a covered excluded route listed with another method', () => {
+    const config = new ApplicationConfig();
+    config.setGlobalPrefix('api');
+    config.setGlobalPrefixOptions({ exclude: mapToExcludeRoute(['users/me']) });
+    const builder = new MiddlewareBuilder(
+      new RoutesMapper(new NestContainer(), config),
+      {} as any,
+      new RouteInfoPathExtractor(config),
+    );
+    const proxy: any = builder.apply([
+      (_req: any, _res: any, next: Function) => next(),
+    ]);
+    const addCoveredExcludedRoutes = vi.spyOn(
+      proxy,
+      'addCoveredExcludedRoutes',
+    );
+
+    proxy.forRoutes('users/:id', {
+      path: 'users/me',
+      method: RequestMethod.POST,
+    });
+
+    expect(addCoveredExcludedRoutes.mock.results[0].value).toContainEqual({
+      path: '/users/me',
+      method: -1,
+    });
+  });
+
+  it('keeps a static route covered by an all-methods parameterized route', () => {
+    const config = new ApplicationConfig();
+    config.setGlobalPrefix('api');
+    const builder = new MiddlewareBuilder(
+      new RoutesMapper(new NestContainer(), config),
+      {} as any,
+      new RouteInfoPathExtractor(config),
+    );
+    const proxy: any = builder.apply([
+      (_req: any, _res: any, next: Function) => next(),
+    ]);
+
+    proxy.forRoutes({ path: 'users/:id', method: RequestMethod.ALL }, 'users');
+
+    expect(builder.build()[0].forRoutes).toContainEqual({
+      path: '/users',
+      method: -1,
+    });
+  });
 });

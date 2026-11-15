@@ -612,6 +612,17 @@ describe('WebSocketsController', () => {
 
       expect(subscribe).not.toHaveBeenCalled();
     });
+
+    it('should pass a truthy primitive event value as the client', () => {
+      const { controller } = setup();
+      const handler = vi.fn();
+      const event = new Subject<any>();
+
+      controller.subscribeDisconnectEvent(handler, event);
+      event.next('raw-client');
+
+      expect(handler).toHaveBeenCalledWith('raw-client');
+    });
   });
 
   describe('subscribeMessages', () => {
@@ -1062,6 +1073,33 @@ describe('WebSocketsController', () => {
       await handler({ id: 1 });
 
       expect(error).toHaveBeenCalledOnce();
+    });
+
+    it('skips enhancer creation and cleanup when the context id cannot be created', async () => {
+      const { controller, injector, exceptionFiltersContext } = setup();
+      const instance = new Gateway();
+      const filter = vi.fn();
+      exceptionFiltersContext.create.mockReturnValue({ handle: filter });
+      vi.spyOn(controller as any, 'getContextId').mockImplementation(() => {
+        throw new Error('context failed');
+      });
+      const cleanup = vi.spyOn(controller as any, 'cleanupRequestScopedContext');
+      const wrapper = wrapperFor(instance, {
+        isDependencyTreeStatic: () => false,
+      });
+
+      const handler = controller.createRequestScopedEventHandler(
+        wrapper as any,
+        { providers: new Map() } as any,
+        'module',
+        'handleDisconnect',
+        {},
+      );
+      await handler({ id: 1 }, 'bye');
+
+      expect(injector.loadEnhancersPerContext).not.toHaveBeenCalled();
+      expect(filter).toHaveBeenCalledOnce();
+      expect(cleanup).not.toHaveBeenCalled();
     });
 
     it('should create enhancers then filter the error when resolution fails', async () => {
