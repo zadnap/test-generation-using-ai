@@ -16,7 +16,7 @@ npm install
 6. Xem coverage hiện tại
 
 ```
-npx --yes supercov -- npx vitest run --config ai-generated-tests/full-project/vitest.config.mts
+SUPERCOV_SOURCE_ROOTS=packages npx supercov -- npx vitest run --config ai-generated-tests/vitest.config.mts
 npx supercov runs latest
 ```
 
