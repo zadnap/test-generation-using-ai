@@ -410,5 +410,68 @@ describe('RouterResponseController', () => {
         { maxPendingDataLength: 1 },
       );
     });
+    it('stream error handling with IntrinsicException, standard Error, and setErrorLogger', async () => {
+      vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      let capturedFile: StreamableFile | undefined;
+      const ctrl = new RouterResponseController({
+        reply: async (_res: any, body: any) => {
+          if (body instanceof StreamableFile) {
+            capturedFile = body;
+            const stream = body.getStream();
+            stream.emit('error', new IntrinsicException());
+            stream.emit('error', new Error('normal error'));
+          }
+        },
+        redirect: vi.fn(),
+        render: vi.fn(),
+      } as any);
+
+      async function* gen() {
+        yield 'chunk';
+      }
+      await ctrl.stream(gen(), response(), { method: 'GET' });
+      if (capturedFile) {
+        capturedFile.errorLogger(new Error('err'));
+      }
+    });
+    it('stream onClose when already settled', async () => {
+      const socket = Object.assign(new EventEmitter(), { destroyed: true });
+      const res = response();
+      async function* gen() {
+        yield 'chunk';
+      }
+      const pending = controller().stream(gen(), res, { method: 'GET', socket });
+      socket.emit('close');
+      await pending;
+    });
+    it('sse onClose when already settled', async () => {
+      const socket = Object.assign(new EventEmitter(), { destroyed: true });
+      const pending = controller().sse(of('hello'), response(), { method: 'GET', socket });
+      socket.emit('close');
+      await pending;
+    });
+    it('sse settled conditions on error, complete, and rejection', async () => {
+      // 1. error when settled
+      const subject1 = new Subject();
+      const socket1 = new EventEmitter();
+      const pending1 = controller().sse(subject1, response(), { method: 'GET', socket: socket1 });
+      await new Promise(resolve => setImmediate(resolve));
+      socket1.emit('close');
+      subject1.error(new Error('late error'));
+      await pending1;
+
+      // 2. complete when settled
+      const subject2 = new Subject();
+      const socket2 = new EventEmitter();
+      const pending2 = controller().sse(subject2, response(), { method: 'GET', socket: socket2 });
+      await new Promise(resolve => setImmediate(resolve));
+      socket2.emit('close');
+      subject2.complete();
+      await pending2;
+
+      // 3. rejection when settled
+      const socket3 = Object.assign(new EventEmitter(), { destroyed: true });
+      await controller().sse(Promise.reject(new Error('rejected')), response(), { method: 'GET', socket: socket3 });
+    });
   });
 });

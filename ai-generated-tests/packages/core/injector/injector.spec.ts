@@ -1192,5 +1192,39 @@ describe('Injector', () => {
         { key, wrapper: dependency },
       ]);
     });
+
+    it('should exercise explicit contextId and inquirer in loadPrototype/loadMiddleware/loadController/loadInjectable', async () => {
+      const injector: any = new Injector();
+      const customContextId: any = { id: 999 };
+
+      // 1. loadPrototype with explicit contextId
+      injector.loadPrototype({ token: 'Test' } as any, null as any, customContextId);
+      const collection = new Map();
+      const protoWrapper = new InstanceWrapper({ metatype: class Proto {}, name: 'Proto', token: 'Proto' });
+      collection.set('Proto', protoWrapper);
+      injector.loadPrototype(protoWrapper, collection, customContextId);
+
+      // 2. loadMiddleware with explicit contextId and inquirer
+      const moduleRef: any = {
+        controllers: new Map(),
+        injectables: new Map(),
+        providers: new Map(),
+        middlewares: new Map(),
+      };
+      const mwWrapper = new InstanceWrapper({ metatype: class Mw {}, name: 'Mw', token: 'Mw' });
+      moduleRef.middlewares.set('Mw', mwWrapper);
+      const inquirer = new InstanceWrapper({ name: 'Inquirer', token: 'Inquirer' });
+      await injector.loadMiddleware(mwWrapper, moduleRef.middlewares, moduleRef, customContextId, inquirer);
+
+      // 3. loadController with explicit contextId
+      const ctrlWrapper = new InstanceWrapper({ metatype: class Ctrl {}, name: 'Ctrl', token: 'Ctrl' });
+      moduleRef.controllers.set('Ctrl', ctrlWrapper);
+      await injector.loadController(ctrlWrapper, moduleRef, customContextId);
+
+      // 4. loadInjectable with explicit contextId
+      const injWrapper = new InstanceWrapper({ metatype: class Inj {}, name: 'Inj', token: 'Inj' });
+      moduleRef.injectables.set('Inj', injWrapper);
+      await injector.loadInjectable(injWrapper, moduleRef, customContextId, inquirer);
+    });
   });
 });
