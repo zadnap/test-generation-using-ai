@@ -112,7 +112,9 @@ Số liệu tham chiếu của bộ test AI hiện tại (scope `ai-generated-te
 | Vòng | Run | Lines | Branches | MC/DC |
 | --- | --- | --- | --- | --- |
 | Baseline | `run_5b466e0edd39e571` | 81,17% | 91,74% | 91,69% (3.683/4.017) |
-| Gần nhất | `run_0736bf8914a94ce2` | 81,27% | 92,25% | 95,94% (3.854/4.017) |
+| Hiện tại (HEAD `e283fc5`) | `run_9ab9c53b4a55554f` | 81,74% | 92,30% | 95,94% (3.854/4.017) |
+
+Suite hiện tại gồm 406 spec trong `ai-generated-tests/packages/**` và 405 spec trong `ai-generated-tests/full-project/packages/**`; cả hai đều được `include: ['ai-generated-tests/**/*.spec.ts']` nhặt vào. Con số ở trên là của đúng trạng thái đã push lên `main`.
 
 ## Phạm vi và cách đọc kết quả
 

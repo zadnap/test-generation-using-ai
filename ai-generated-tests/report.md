@@ -3,19 +3,21 @@
 - Repository: `nestjs/nest` (TypeScript, ESM), Vitest 5.1.0
 - Phạm vi: chỉ thêm/sửa test trong `ai-generated-tests/`, không đụng production code, config coverage hay test có sẵn
 - Cấu hình đo: `ai-generated-tests/vitest.config.mts` (dùng chung cho cả trước và sau)
-- Ngày đo cuối: 2026-11-15
+- Ngày đo cuối: 2026-11-25
 
 ## 1. Kết quả tổng quan
 
-| Chỉ số | Baseline (`run_5b466e0edd39e571`) | Cuối (`run_0736bf8914a94ce2`) | Δ |
+| Chỉ số | Baseline (`run_5b466e0edd39e571`) | Cuối — trạng thái đã push (`run_9ab9c53b4a55554f`) | Δ |
 | --- | --- | --- | --- |
-| Lines | 81,17% | **81,27%** (19.252/23.690) | +0,10 pp |
-| Branches | 91,74% | **92,25%** (10.057/10.902) | +0,51 pp |
+| Lines | 81,17% | **81,74%** (19.365/23.690) | +0,57 pp |
+| Branches | 91,74% | **92,30%** (10.063/10.902) | +0,56 pp |
 | MC/DC (valid pairs) | 91,69% (3.683/4.017) | **95,94% (3.854/4.017)** | **+4,25 pp / +171 điều kiện** |
-| Số test | 13.690 | 13.841 | +151 |
-| Pass / Fail | — / 55 | 13.802 / 39 | — |
+| Số test | 13.690 | 13.854 | +164 |
+| Pass / Fail | — / 55 | 13.806 / 48 | — |
 
-39 test fail còn lại đều thuộc nhóm có sẵn từ baseline và do môi trường, không liên quan test thêm:
+Run cuối `run_9ab9c53b4a55554f` đo đúng commit đã push (`e283fc5`, trên nền `b0075a7` của người khác), nên bất kỳ ai clone `main` rồi chạy lệnh ở mục 2 đều ra cùng bộ test và cùng mức phủ.
+
+48 test fail còn lại đều thuộc nhóm có sẵn từ baseline và do môi trường, không liên quan test thêm:
 
 - timeout mạng kafka/mqtt/rmq (5 s)
 - `EADDRINUSE ::1:3000` (`nest-application`, `nest-microservice` listen)
@@ -23,7 +25,7 @@
 - `ws-adapter`: `listenerCount('upgrade')` trả 1 thay vì 0
 - `nest-microservice`: status / dispose / on / unwrap / getTransportServer
 
-Số lượng fail dao động 34–39 giữa các vòng (flaky theo môi trường). Toàn bộ spec mới/sửa đều pass khi chạy riêng.
+Số lượng fail dao động 34–48 giữa các vòng (flaky theo môi trường, và một số test trùng tên tồn tại ở cả hai bộ). Toàn bộ spec mới/sửa đều pass khi chạy riêng.
 
 ## 2. Cách đo
 
@@ -49,8 +51,9 @@ Log từng vòng: `ai-generated-tests/supercov-baseline.log`, `supercov-round1..
 | 3 | `run_874f67de7ca57673` | 95,52% | + `fastify-adapter` |
 | 4 | `run_6bf94b91aecdc7d9` | 95,72% | + `route-conflict-detector`, `scanner`, `middleware/builder` |
 | 5 | `run_0736bf8914a94ce2` | **95,94%** | + `node-router`, `router/utils` |
+| Xác nhận | `run_9ab9c53b4a55554f` | **95,94%** | chạy lại tại HEAD đã push (thêm 405 spec `full-project`) |
 
-Không có vòng nào không cải thiện, nên chưa chạm điều kiện dừng "3 vòng liên tiếp không tăng".
+Vòng "Xác nhận" chỉ để chứng minh trạng thái trên `main` tái lập đúng mức phủ, không phải một vòng tối ưu. Không có vòng tối ưu nào không cải thiện, nên chưa chạm điều kiện dừng "3 vòng liên tiếp không tăng".
 
 ## 4. Test đã thêm
 
@@ -84,6 +87,8 @@ Không có vòng nào không cải thiện, nên chưa chạm điều kiện d�
 **File tạo mới:** `ai-generated-tests/packages/platform-node/adapters/node-request-transfer.spec.ts` — 12 test cho `transferFile` / `respondWithError` / thương lượng redirect (mock `send`).
 
 **File cập nhật:** 30 spec trong `ai-generated-tests/packages/**` (git diff: 30 files, 1.609 insertions).
+
+**Bộ bổ sung `ai-generated-tests/full-project/**`:** 405 spec (sinh ở lần thứ hai; không file nào trùng nội dung với bộ chính) đóng góp 22 điều kiện MC/DC còn thiếu, tập trung ở `router-explorer.ts` (5), `router-response-controller.ts` (6), `client-kafka.ts` (2), `client-grpc.ts` (2), `server-grpc.ts` (2), `client-rmq` / `server-rmq` / `client-mqtt` (1 mỗi file). Thiếu bộ này, mức phủ chỉ còn 95,39% (3.832/4.017) — đo bằng `run_c509534bcd22b1a0` trên đúng phần đã push trước đó.
 
 Một số kỹ thuật đáng chú ý:
 
@@ -184,5 +189,6 @@ npx vitest run --config ai-generated-tests/vitest.config.mts ai-generated-tests/
 ## 7. Ghi chú
 
 - Chỉ số MC/DC là "valid pairs trên tổng số điều kiện nguyên tử" do Supercov đo từ full suite; `% Branch` của Vitest (V8) là metric khác, không thay thế được.
-- Attribution chính xác cho 13.841 test; 371 file có giới hạn đo (unclassified source: `sample`, `tools`) — không ảnh hưởng các file `packages/**` được báo cáo ở trên.
+- Attribution chính xác cho 13.854 test; 371 file có giới hạn đo (unclassified source: `sample`, `tools`) — không ảnh hưởng các file `packages/**` được báo cáo ở trên.
+- Hai bộ spec (`packages/**` và `full-project/packages/**`) gần trùng nội dung nên một số test chạy hai lần; thời gian full suite tăng từ ~69 s lên ~124–174 s. Đây là giá phải trả để giữ đúng 95,94% khi clone từ `main`.
 - Không sửa production code, `vitest.config.mts`, `package.json` hay test có sẵn.
